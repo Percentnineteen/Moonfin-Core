@@ -1,0 +1,162 @@
+name: Build tvOS unsigned
+
+on:
+  workflow_dispatch:
+
+env:
+  FLUTTER_TVOS_REF: 'v3.44.1-tvos.1.2.0'
+
+jobs:
+  build-tvos-unsigned:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 (tvOS 26 SDK)
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::Xcode 26 not found on runner; required for the tvOS 26 SDK"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Install tvOS platform
+        run: |
+          sudo xcodebuild -runFirstLaunch || true
+          for i in 1 2 3 4 5 6; do
+            if xcodebuild -downloadPlatform tvOS; then
+              echo "tvOS platform installed on attempt $i"
+              exit 0
+            fi
+            echo "downloadPlatform attempt $i failed (known flaky runner bug); retrying in 25s"
+            sleep 25
+          done
+          echo "::error::tvOS platform install failed after 6 attempts"
+          exit 1
+
+      - name: Cache flutter-tvos toolchain
+        id: cache-fluttertvos
+        uses: actions/cache@v4
+        with:
+          path: ~/flutter-tvos
+          key: flutter-tvos-${{ env.FLUTTER_TVOS_REF }}-${{ runner.os }}-arm64
+
+      - name: Install flutter-tvos
+        if: steps.cache-fluttertvos.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$FLUTTER_TVOS_REF" \
+            https://github.com/fluttertv/flutter-tvos.git "$HOME/flutter-tvos"
+
+      - name: Add flutter-tvos to PATH and precache
+        run: |
+          echo "$HOME/flutter-tvos/bin" >> "$GITHUB_PATH"
+          "$HOME/flutter-tvos/bin/flutter-tvos" precache
+
+      - name: Resolve dependencies
+        run: |
+          flutter-tvos pub get
+
+      - name: Prepare Flutter build settings and pods
+        run: |
+          flutter-tvos build tvos --release --no-tree-shake-icons --dart-define=MOONFIN_TVOS=true || true
+          test -f tvos/Flutter/Generated.xcconfig
+          grep -q '^FLUTTER_ROOT=' tvos/Flutter/Generated.xcconfig \
+            || echo "FLUTTER_ROOT=$HOME/flutter-tvos" >> tvos/Flutter/Generated.xcconfig
+
+      - name: Stage flutter_assets for the Xcode copy phase
+        run: |
+          DEST="tvos/Flutter/flutter_assets"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          SRC_APP=$(find build/tvos -maxdepth 3 -type d -path "*Release-appletvos/Runner.app/flutter_assets" | head -1)
+          if [ -n "$SRC_APP" ]; then
+            echo "Staging from assembled app bundle: $SRC_APP"
+            rsync -a "$SRC_APP/" "$DEST/"
+          else
+            echo "Staging from build/tvos bundle root"
+            rsync -a \
+              --exclude='*-appletvos' --exclude='*-appletvsimulator' \
+              --exclude='aot' --exclude='.last_build_id' \
+              --exclude='kernel_blob.bin' --exclude='vm_snapshot_data' \
+              --exclude='isolate_snapshot_data' \
+              build/tvos/ "$DEST/"
+          fi
+          test -f "$DEST/fonts/MaterialIcons-Regular.otf" \
+            || { echo "::error::MaterialIcons font missing from staged flutter_assets"; exit 1; }
+          test -f "$DEST/AssetManifest.bin" \
+            || { echo "::error::AssetManifest.bin missing from staged flutter_assets"; exit 1; }
+          echo "Staged flutter_assets:" && ls "$DEST"
+
+      - name: Build unsigned Release app
+        run: |
+          xcodebuild \
+            -workspace tvos/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk appletvos \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Verify unsigned app
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-appletvos/Runner.app"
+
+          echo "Checking for app at:"
+          echo "$APP"
+
+          test -d "$APP" \
+            || {
+              echo "::error::Runner.app was not produced"
+              exit 1
+            }
+
+          test -f "$APP/Runner" \
+            || {
+              echo "::error::Runner executable is missing"
+              exit 1
+            }
+
+          test -f "$APP/flutter_assets/fonts/MaterialIcons-Regular.otf" \
+            || {
+              echo "::error::Built app is missing flutter_assets fonts"
+              exit 1
+            }
+
+          test -e "$APP/PlugIns/MoonfinTopShelf.appex/MoonfinTopShelf" \
+            || {
+              echo "::error::Top Shelf extension missing from PlugIns"
+              exit 1
+            }
+
+          echo ""
+          echo "=== Runner.app ==="
+          du -sh "$APP"
+          find "$APP" -maxdepth 2 -print | sort
+
+      - name: Package app artifact
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-appletvos/Runner.app"
+          ARTIFACT="$RUNNER_TEMP/moonfin-tvos-unsigned"
+
+          rm -rf "$ARTIFACT"
+          mkdir -p "$ARTIFACT"
+
+          cp -R "$APP" "$ARTIFACT/Runner.app"
+
+          echo "Artifact contents:"
+          find "$ARTIFACT" -maxdepth 2 -print | sort
+
+      - name: Upload unsigned tvOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonfin-tvos-unsigned
+          path: ${{ runner.temp }}/moonfin-tvos-unsigned/
+          if-no-files-found: error
+
