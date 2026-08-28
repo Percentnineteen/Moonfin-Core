@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.org.moonfin.app</string>
+		<string>group.com.percentnineteen.moonfin</string>
 	</array>
 </dict>
 </plist>
