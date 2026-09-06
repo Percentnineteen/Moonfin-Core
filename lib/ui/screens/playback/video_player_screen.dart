@@ -3308,6 +3308,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    debugPrint(
+      'KEY EVENT: ${event.runtimeType} '
+      'logical=${event.logicalKey} '
+      'physical=${event.physicalKey}',
+    );
+
     if (_isCurrentPreroll) {
       if (event is KeyUpEvent) {
         final isBackKey = event.logicalKey.isBackKey;
