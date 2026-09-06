@@ -2678,6 +2678,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _exitPlayback() async {
+    _log.playback('*** _exitPlayback() CALLED ***');
     if (_isStopping) return;
     setState(() {
       _isStopping = true;
@@ -5577,14 +5578,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _setDesktopFullscreen(bool full) async {
-    if (!PlatformDetection.useDesktopUi) return;
-    try {
-      await FullscreenHelper.setFullscreen(full);
-      if (!mounted) return;
-      setState(() => _isDesktopFullscreen = full);
-      unawaited(_syncAutoHdrSwitching());
-    } catch (_) {}
+  if (!PlatformDetection.useDesktopUi) return;
+  try {
+    await FullscreenHelper.setFullscreen(full);
+    if (!mounted) return;
+    setState(() => _isDesktopFullscreen = full);
+    unawaited(_syncAutoHdrSwitching());
+  } catch (e, st) {
+    _log.playback(
+      '_setDesktopFullscreen($full) failed: $e',
+      level: LogLevel.error,
+      error: st,
+    );
   }
+}
+
 
   Future<void> _toggleDesktopFullscreen() async {
     if (!PlatformDetection.useDesktopUi) return;
