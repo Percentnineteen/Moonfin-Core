@@ -3704,6 +3704,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           unawaited(_setDesktopFullscreen(false));
           return KeyEventResult.handled;
         }
+        return KeyEventResult.ignored;
         _exitPlayback();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.select:
