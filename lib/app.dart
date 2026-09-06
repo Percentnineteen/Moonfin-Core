@@ -59,6 +59,8 @@ import 'util/focus/key_event_utils.dart';
 import 'util/focus/gamepad/gamepad_navigation_scope.dart';
 import 'package:custom_tv_text_field/custom_tv_text_field.dart';
 
+import 'package:server_core/server_core.dart';
+
 class MoonfinApp extends StatefulWidget {
   const MoonfinApp({super.key});
 
@@ -506,11 +508,20 @@ class _GlobalShortcutScopeState extends State<_GlobalShortcutScope>
   bool _hasPagelessRouteOnTop(NavigatorState navigatorState) {
     var hasPagelessRouteOnTop = false;
     navigatorState.popUntil((route) {
-      hasPagelessRouteOnTop = route.settings is! Page;
-      return true;
-    });
+        hasPagelessRouteOnTop = route.settings is! Page;
+        ServerLog.emit(
+            'playback',
+            ServerLogLevel.debug,
+            'TOP NAVIGATOR ROUTE: '
+            'type=${route.runtimeType} '
+            'settings=${route.settings.runtimeType} '
+            'settings=$route',
+            );
+        return true;
+        });
     return hasPagelessRouteOnTop;
   }
+
 
   bool _handleMouseBackNavigation() {
     if (_isPlayerRoute()) {
@@ -623,11 +634,37 @@ class _GlobalShortcutScopeState extends State<_GlobalShortcutScope>
   }
 
   bool _isPlayerRoute() {
-    final path = appRouter.routerDelegate.currentConfiguration.uri.path;
-    return path.startsWith('/player/') ||
-        path == '/live-tv/player' ||
-        path.startsWith('/game-player/');
+    final configuration =
+      appRouter.routerDelegate.currentConfiguration;
+
+    final matches = configuration.matches;
+    if (matches.isEmpty) {
+      ServerLog.emit(
+          'playback',
+          ServerLogLevel.debug,
+          'IS PLAYER ROUTE: no matches',
+          );
+      return false;
+    }
+
+    final path = matches.last.matchedLocation;
+
+    final result = path.startsWith('/player/') ||
+      path == '/live-tv/player' ||
+      path.startsWith('/game-player/');
+
+    ServerLog.emit(
+        'playback',
+        ServerLogLevel.debug,
+        'IS PLAYER ROUTE: '
+        'uri=${configuration.uri} '
+        'topMatch=$path '
+        'result=$result',
+        );
+
+    return result;
   }
+
 
   bool _isHomeRoute() {
     final path = appRouter.routerDelegate.currentConfiguration.uri.path;
@@ -647,6 +684,14 @@ class _GlobalShortcutScopeState extends State<_GlobalShortcutScope>
   }
 
   bool _onHardwareKeyEvent(KeyEvent event) {
+    ServerLog.emit(
+        'playback',
+        ServerLogLevel.debug,
+        'GLOBAL KEY HANDLER ENTER: '
+        'event=${event.runtimeType} '
+        'key=${event.logicalKey} '
+        'physical=${event.physicalKey} '
+        );
     if (PlatformDetection.isTV &&
         _screensaverController.handleKeyEvent(event)) {
       return true;
@@ -685,19 +730,82 @@ class _GlobalShortcutScopeState extends State<_GlobalShortcutScope>
         }
         return true;
       }
-      if (_isPlayerRoute()) {
-        return false;
+      final globalBackId = DateTime.now().microsecondsSinceEpoch;
+      final routePath = appRouter.routerDelegate.currentConfiguration.uri.path;
+      final isPlayerRoute = _isPlayerRoute();
+
+      final configuration = appRouter.routerDelegate.currentConfiguration;
+      ServerLog.emit(
+          'navigation',
+          ServerLogLevel.debug,
+          'BACK ROUTER STATE: '
+          'uri=${configuration.uri} '
+          'location=${configuration.uri.toString()} '
+          'canPop=${appRouter.canPop()} '
+          'matches=${configuration.matches.map((m) => m.matchedLocation).join(" -> ")}',
+          );
+
+      final canPop = appRouter.canPop();
+      ServerLog.emit(
+          'playback',
+          ServerLogLevel.debug,
+          'GLOBAL BACK HANDLER: [$globalBackId] '
+          'key=$key '
+          'routePath=$routePath '
+          'isPlayerRoute=$isPlayerRoute '
+          'canPop=$canPop '
+          'route=${appRouter.routerDelegate.currentConfiguration.uri}',
+          );
+      if (isPlayerRoute) {
+        ServerLog.emit(
+            'playback',
+            ServerLogLevel.debug,
+            'GLOBAL BACK HANDLER: [$globalBackId] '
+            'PLAYER ROUTE -> consuming key',
+            );
+        return true;
       }
-      if (appRouter.canPop()) {
+      if (canPop && !isPlayerRoute) {
         // On Android the system also delivers popRoute via MethodChannel for the
         // system back button (goBack). For other back-like keys (escape, browserBack),
         // we must manually pop in Flutter even on Android.
         if (PlatformDetection.isAndroid && key == LogicalKeyboardKey.goBack) {
           return true;
         }
+        ServerLog.emit(
+            'playback',
+            ServerLogLevel.debug,
+            'GLOBAL BACK HANDLER: [$globalBackId]: '
+            'NOT PLAYER -> scheduling appRouter.pop()',
+            );
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          appRouter.pop();
+            if (!mounted) return;
+
+            final before = appRouter.routerDelegate.currentConfiguration;
+
+            ServerLog.emit(
+                'playback',
+                ServerLogLevel.debug,
+                'GLOBAL BACK HANDLER: [$globalBackId] BEFORE pop: '
+                'uri=${before.uri} '
+                'location=${before.uri} '
+                'canPop=${appRouter.canPop()} '
+                'matches=${before.matches.map((m) => m.matchedLocation).join(' -> ')}',
+                );
+
+            appRouter.pop();
+
+            final after = appRouter.routerDelegate.currentConfiguration;
+
+            ServerLog.emit(
+                'playback',
+                ServerLogLevel.debug,
+                'GLOBAL BACK HANDLER: [$globalBackId] AFTER pop: '
+                'uri=${after.uri} '
+                'location=${after.uri} '
+                'canPop=${appRouter.canPop()} '
+                'matches=${after.matches.map((m) => m.matchedLocation).join(' -> ')}',
+                );
         });
       } else if (!_exitDialogShowing) {
         if (PlatformDetection.isAndroid && key == LogicalKeyboardKey.goBack) {

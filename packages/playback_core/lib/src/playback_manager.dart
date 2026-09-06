@@ -9,6 +9,9 @@ import 'queue_service.dart';
 import 'stream_resolution_result.dart';
 import 'track_ordinal_mapper.dart';
 
+import 'package:server_core/server_core.dart';
+
+
 class _ProgressGeneration {
   _ProgressGeneration({
     required this.item,
@@ -762,6 +765,15 @@ class PlaybackManager implements AudioOwnable {
   }
 
   void _onTrackCompleted(bool completed) {
+    ServerLog.emit(
+        'playback',
+        ServerLogLevel.debug,
+        '_onTrackCompleted: completed=$completed '
+        'position=${state.position} '
+        'isPlaying=${_backend?.isPlaying} '
+        'backend=${_traceBackendName(_backend)}',
+        );
+
     if (!completed) return;
 
     final completedItem = queueService.currentItem;
@@ -1938,6 +1950,15 @@ class PlaybackManager implements AudioOwnable {
   }
 
   void _issuePlaybackStop(_ProgressGeneration generation) {
+    ServerLog.emit(
+        'playback',
+        ServerLogLevel.debug,
+        '_issuePlaybackStop: '
+        'item=${_traceItemId(generation.item)} '
+        'position=${generation.stopPosition} '
+        'playMethod=${generation.resolution.playMethod.name}',
+        );
+
     final service = generation.service;
     if (service == null) return;
     try {
@@ -2894,6 +2915,20 @@ class PlaybackManager implements AudioOwnable {
     dynamic expectedItem,
     bool releaseServerResources = false,
   }) async {
+    ServerLog.emit(
+        'playback',
+        ServerLogLevel.debug,
+        '_stopAndReportCurrent ENTER: '
+        'skipQueueChange=$skipQueueChange '
+        'releaseServerResources=$releaseServerResources '
+        'currentItem=${_traceItemId(queueService.currentItem)} '
+        'position=${state.position} '
+        'backend=${_traceBackendName(_backend)}\n'
+        'CALL STACK:\n${StackTrace.current}',
+        );
+
+
+
     final existingStop = _stopInFlight;
     if (existingStop != null) {
       await existingStop;

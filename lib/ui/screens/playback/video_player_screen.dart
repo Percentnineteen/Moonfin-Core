@@ -3712,7 +3712,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _log.playback(
           'Escape pressed: '
           'useDesktopUi=${PlatformDetection.useDesktopUi}, '
-          'isDesktopFullscreen=$_isDesktopFullscreen',
+          'isDesktopFullscreen=$_isDesktopFullscreen'
         );
         if (PlatformDetection.useDesktopUi && _isDesktopFullscreen) {
           _log.playback('Escape: calling _setDesktopFullscreen()');
@@ -3755,6 +3755,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     return PopScope(
       canPop: _readyToPop,
       onPopInvokedWithResult: (didPop, _) {
+          ServerLog.emit(
+              'playback',
+              ServerLogLevel.debug,
+              'PopScope.onPopInvokedWithResult: '
+              'didPop=$didPop '
+              'readyToPop=$_readyToPop\n'
+              'CALL STACK:\n${StackTrace.current}',
+              );
         if (didPop) return;
         if (_isBackNavigationSuppressed()) {
           return;
@@ -3776,7 +3784,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           setState(() => _controlsVisible = false);
           return;
         }
-        _exitPlayback();
+        ServerLog.emit(
+            'playback',
+            ServerLogLevel.debug,
+            'PopScope: calling _exitPlayback()',
+            );
+        //_exitPlayback();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
