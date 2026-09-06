@@ -3714,10 +3714,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           'isDesktopFullscreen=$_isDesktopFullscreen',
         );
         if (PlatformDetection.useDesktopUi && _isDesktopFullscreen) {
+          _log.playback('Escape: calling _setDesktopFullscreen()');
           unawaited(_setDesktopFullscreen(false));
-          return KeyEventResult.handled;
+        } else {
+          _log.playback('Escape: calling _exitPlayback()');
+          _exitPlayback();
         }
-        _exitPlayback();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.select:
       case LogicalKeyboardKey.enter:
