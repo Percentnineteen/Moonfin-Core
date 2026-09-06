@@ -79,6 +79,8 @@ import 'playback_takeover.dart';
 import 'osd_buttons.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../../data/services/log_service.dart';
+
 class VideoPlayerScreen extends StatefulWidget {
   const VideoPlayerScreen({super.key});
 
@@ -88,6 +90,7 @@ class VideoPlayerScreen extends StatefulWidget {
 
 class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     with WidgetsBindingObserver, WindowListener {
+  LogService get _log => GetIt.instance<LogService>();
   static final _camelCaseSpaceRe = RegExp(r'(?<=[a-z])(?=[A-Z])');
   static const _streamLoadingLabel = 'Loading Stream...';
   static const _tvTemporarySpeed = 2.0;
@@ -3308,7 +3311,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    debugPrint(
+    _log.playback(
       'KEY EVENT: ${event.runtimeType} '
       'logical=${event.logicalKey} '
       'physical=${event.physicalKey}',
@@ -3705,12 +3708,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _showControls();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.escape:
-        debugPrint('DUMB TESTING Escape: useDesktopUi=${PlatformDetection.useDesktopUi}, ' '_isDesktopFullscreen=$_isDesktopFullscreen',);
+        _log.playback(
+          'Escape pressed: '
+          'useDesktopUi=${PlatformDetection.useDesktopUi}, '
+          'isDesktopFullscreen=$_isDesktopFullscreen',
+        );
         if (PlatformDetection.useDesktopUi && _isDesktopFullscreen) {
           unawaited(_setDesktopFullscreen(false));
           return KeyEventResult.handled;
         }
-        return KeyEventResult.ignored;
         _exitPlayback();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.select:
