@@ -3699,6 +3699,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _showControls();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.escape:
+        debugPrint('DUMB TESTING Escape: useDesktopUi=${PlatformDetection.useDesktopUi}, ' '_isDesktopFullscreen=$_isDesktopFullscreen',);
         if (PlatformDetection.useDesktopUi && _isDesktopFullscreen) {
           unawaited(_setDesktopFullscreen(false));
           return KeyEventResult.handled;
