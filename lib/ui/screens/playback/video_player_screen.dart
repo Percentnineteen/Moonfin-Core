@@ -5578,20 +5578,36 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _setDesktopFullscreen(bool full) async {
-  if (!PlatformDetection.useDesktopUi) return;
-  try {
-    await FullscreenHelper.setFullscreen(full);
-    if (!mounted) return;
-    setState(() => _isDesktopFullscreen = full);
-    unawaited(_syncAutoHdrSwitching());
-  } catch (e, st) {
-    _log.playback(
-      '_setDesktopFullscreen($full) failed: $e',
-      level: LogLevel.error,
-      error: st,
-    );
+    if (!PlatformDetection.useDesktopUi) return;
+    _log.playback('_setDesktopFullscreen($full): START');
+    try {
+      _log.playback(
+          '_setDesktopFullscreen($full): calling FullscreenHelper.setFullscreen',
+          );
+      await FullscreenHelper.setFullscreen(full);
+      _log.playback(
+          '_setDesktopFullscreen($full): FullscreenHelper completed',
+          );
+      if (!mounted) {
+        _log.playback(
+            '_setDesktopFullscreen($full): NOT MOUNTED after fullscreen change',
+            );
+        return;
+      }
+      setState(() => _isDesktopFullscreen = full);
+      _log.playback(
+          '_setDesktopFullscreen($full): state updated',
+          );
+      unawaited(_syncAutoHdrSwitching());
+    } catch (e, st) {
+      _log.playback(
+          '_setDesktopFullscreen($full): FAILED: $e',
+          level: LogLevel.error,
+          error: st,
+          );
+    }
   }
-}
+
 
 
   Future<void> _toggleDesktopFullscreen() async {
