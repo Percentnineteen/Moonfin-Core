@@ -79,8 +79,6 @@ import 'playback_takeover.dart';
 import 'osd_buttons.dart';
 import 'package:video_player/video_player.dart';
 
-import '../../../data/services/log_service.dart';
-
 class VideoPlayerScreen extends StatefulWidget {
   const VideoPlayerScreen({super.key});
 
@@ -90,7 +88,6 @@ class VideoPlayerScreen extends StatefulWidget {
 
 class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     with WidgetsBindingObserver, WindowListener {
-  LogService get _log => GetIt.instance<LogService>();
   static final _camelCaseSpaceRe = RegExp(r'(?<=[a-z])(?=[A-Z])');
   static const _streamLoadingLabel = 'Loading Stream...';
   static const _tvTemporarySpeed = 2.0;
@@ -2678,7 +2675,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _exitPlayback() async {
-    _log.playback('*** _exitPlayback() CALLED ***');
     if (_isStopping) return;
     setState(() {
       _isStopping = true;
@@ -3312,12 +3308,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    _log.playback(
-      'KEY EVENT: ${event.runtimeType} '
-      'logical=${event.logicalKey} '
-      'physical=${event.physicalKey}',
-    );
-
     if (_isCurrentPreroll) {
       if (event is KeyUpEvent) {
         final isBackKey = event.logicalKey.isBackKey;
@@ -3709,18 +3699,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _showControls();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.escape:
-        _log.playback(
-          'Escape pressed: '
-          'useDesktopUi=${PlatformDetection.useDesktopUi}, '
-          'isDesktopFullscreen=$_isDesktopFullscreen'
-        );
         if (PlatformDetection.useDesktopUi && _isDesktopFullscreen) {
-          _log.playback('Escape: calling _setDesktopFullscreen()');
           unawaited(_setDesktopFullscreen(false));
-        } else {
-          _log.playback('Escape: calling _exitPlayback()');
-          _exitPlayback();
+          return KeyEventResult.handled;
         }
+        _exitPlayback();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.select:
       case LogicalKeyboardKey.enter:
@@ -3755,14 +3738,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     return PopScope(
       canPop: _readyToPop,
       onPopInvokedWithResult: (didPop, _) {
-          ServerLog.emit(
-              'playback',
-              ServerLogLevel.debug,
-              'PopScope.onPopInvokedWithResult: '
-              'didPop=$didPop '
-              'readyToPop=$_readyToPop\n'
-              'CALL STACK:\n${StackTrace.current}',
-              );
         if (didPop) return;
         if (_isBackNavigationSuppressed()) {
           return;
@@ -3784,12 +3759,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           setState(() => _controlsVisible = false);
           return;
         }
-        ServerLog.emit(
-            'playback',
-            ServerLogLevel.debug,
-            'PopScope: calling _exitPlayback()',
-            );
-        //_exitPlayback();
+        _exitPlayback();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -5592,36 +5562,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   Future<void> _setDesktopFullscreen(bool full) async {
     if (!PlatformDetection.useDesktopUi) return;
-    _log.playback('_setDesktopFullscreen($full): START');
     try {
-      _log.playback(
-          '_setDesktopFullscreen($full): calling FullscreenHelper.setFullscreen',
-          );
       await FullscreenHelper.setFullscreen(full);
-      _log.playback(
-          '_setDesktopFullscreen($full): FullscreenHelper completed',
-          );
-      if (!mounted) {
-        _log.playback(
-            '_setDesktopFullscreen($full): NOT MOUNTED after fullscreen change',
-            );
-        return;
-      }
+      if (!mounted) return;
       setState(() => _isDesktopFullscreen = full);
-      _log.playback(
-          '_setDesktopFullscreen($full): state updated',
-          );
       unawaited(_syncAutoHdrSwitching());
-    } catch (e, st) {
-      _log.playback(
-          '_setDesktopFullscreen($full): FAILED: $e',
-          level: LogLevel.error,
-          error: st,
-          );
-    }
+    } catch (_) {}
   }
-
-
 
   Future<void> _toggleDesktopFullscreen() async {
     if (!PlatformDetection.useDesktopUi) return;
