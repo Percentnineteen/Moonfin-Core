@@ -633,18 +633,68 @@ class _GlobalShortcutScopeState extends State<_GlobalShortcutScope>
     return false;
   }
 
+  //bool _isPlayerRoute() {
+  //  final matches =
+  //    appRouter.routerDelegate.currentConfiguration.matches;
+
+  //  if (matches.isEmpty) return false;
+
+  //  final path = matches.last.matchedLocation;
+
+  //  return path.startsWith('/player/') ||
+  //    path == '/live-tv/player' ||
+  //    path.startsWith('/game-player/');
+  //}
+
   bool _isPlayerRoute() {
-    final matches =
-      appRouter.routerDelegate.currentConfiguration.matches;
+  final configuration =
+      appRouter.routerDelegate.currentConfiguration;
 
-    if (matches.isEmpty) return false;
+  ServerLog.emit(
+    'navigation',
+    ServerLogLevel.debug,
+    '========== ROUTER CONFIGURATION ==========\n'
+    'configuration.runtimeType=${configuration.runtimeType}\n'
+    'configuration=$configuration\n'
+    'uri=${configuration.uri}\n'
+    'uri.path=${configuration.uri.path}\n'
+    'uri.query=${configuration.uri.query}\n'
+    'uri.fragment=${configuration.uri.fragment}\n'
+    'matches.length=${configuration.matches.length}\n'
+    'matches:',
+  );
 
-    final path = matches.last.matchedLocation;
+  for (var i = 0; i < configuration.matches.length; i++) {
+    final match = configuration.matches[i];
 
-    return path.startsWith('/player/') ||
+    ServerLog.emit(
+      'navigation',
+      ServerLogLevel.debug,
+      'MATCH[$i]: '
+      'runtimeType=${match.runtimeType} '
+      'matchedLocation=${match.matchedLocation} '
+      'match=$match',
+    );
+  }
+
+  ServerLog.emit(
+    'navigation',
+    ServerLogLevel.debug,
+    '===========================================',
+  );
+
+  final matches = configuration.matches;
+  if (matches.isEmpty) {
+    return false;
+  }
+
+  final path = matches.last.matchedLocation;
+
+  return path.startsWith('/player/') ||
       path == '/live-tv/player' ||
       path.startsWith('/game-player/');
-  }
+}
+
 
   bool _isHomeRoute() {
     final path = appRouter.routerDelegate.currentConfiguration.uri.path;
