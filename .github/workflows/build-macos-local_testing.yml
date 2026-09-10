@@ -1,0 +1,107 @@
+name: Branch Testing - macOS - test-escape
+
+on:
+  push:
+    branches:
+      - test-escape
+
+# If you push again while a build is running,
+# cancel the old build and build the newest commit instead.
+concurrency:
+  group: test-escape-macos
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: '3.44.1'
+
+jobs:
+  macos:
+    name: Build macOS
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Select Xcode 26.3
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Import signing certificate
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          # If the certificate isn't available, continue with an ad-hoc
+          # signature. This matches the behavior of the existing build.
+          if [ -z "$MACOS_CERTIFICATE_BASE64" ]; then
+            echo "No macOS certificate secret, skipping signing setup (ad-hoc signed build)."
+            exit 0
+          fi
+
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 20)"
+
+          echo "$MACOS_CERTIFICATE_BASE64" | base64 -D -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          security list-keychains \
+            -d user \
+            -s "$KEYCHAIN_PATH" login.keychain-db
+
+      - name: Store notarytool credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_ID" ]; then
+            echo "No Apple ID configured, skipping notarytool credentials"
+            exit 0
+          fi
+
+          xcrun notarytool store-credentials "moonfin-notary" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+
+      - name: Build signed DMG
+        env:
+          APP_SIGN_ID: ${{ secrets.MACOS_APP_SIGN_ID }}
+          INSTALLER_ID: ${{ secrets.MACOS_INSTALLER_ID }}
+          NOTARYTOOL_PROFILE: ${{ secrets.APPLE_ID != '' && 'moonfin-notary' || '' }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUILD_APPSTORE_PKG: '0'
+        run: |
+          chmod +x build-macos.sh
+          ./build-macos.sh
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-test-escape
+          path: Moonfin_macOS_v*.dmg
+          if-no-files-found: error
