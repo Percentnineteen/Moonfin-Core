@@ -1,0 +1,358 @@
+name: Build Testing
+
+on:
+  push:
+    branches:
+      - '**'
+
+# If you push again to the same branch while a build is running,
+# cancel the old build and build the newest commit instead.
+#
+# The branch is part of the group so builds on different branches
+# can run simultaneously.
+concurrency:
+  group: build-testing-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # These versions come from GOSPEL and are the source of truth.
+  FLUTTER_VERSION: '3.47.2'
+  FLUTTER_TVOS_REF: 'v3.47.2-tvos.1.10.0'
+
+jobs:
+
+  # ============================================================
+  # macOS
+  # Runs for every branch.
+  # ============================================================
+  macos:
+    name: Build macOS
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Select Xcode 26.3
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      # On PRs/forks or testing branches where the certificate secret is
+      # unavailable, build-macos.sh falls back to an ad-hoc signature.
+      - name: Set up Developer ID signing
+        uses: ./.github/actions/apple-signing
+        with:
+          certificate-base64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
+      - name: Store notarytool credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_ID" ]; then
+            echo "No Apple ID configured, skipping notarytool credentials"
+            exit 0
+          fi
+
+          xcrun notarytool store-credentials "moonfin-notary" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+
+      - name: Build signed DMG
+        env:
+          APP_SIGN_ID: ${{ secrets.MACOS_APP_SIGN_ID }}
+          INSTALLER_ID: ${{ secrets.MACOS_INSTALLER_ID }}
+          NOTARYTOOL_PROFILE: ${{ secrets.APPLE_ID != '' && 'moonfin-notary' || '' }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUILD_APPSTORE_PKG: '0'
+        run: |
+          chmod +x build-macos.sh
+          ./build-macos.sh
+
+      - name: Verify macOS artifact
+        run: |
+          shopt -s nullglob
+          artifacts=(Moonfin_macOS_v*.dmg)
+
+          if [ ${#artifacts[@]} -eq 0 ]; then
+            echo "::error::macOS build did not produce Moonfin_macOS_v*.dmg"
+            exit 1
+          fi
+
+          echo "Found macOS artifact(s):"
+          printf '  - %s\n' "${artifacts[@]}"
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-${{ github.ref_name }}
+          path: Moonfin_macOS_v*.dmg
+          if-no-files-found: error
+
+
+  # ============================================================
+  # Windows
+  #
+  # Runs for every branch.
+  #
+  # Uses the Gospel Windows build methodology and build script.
+  # This testing workflow deliberately does NOT perform SignPath
+  # signing; that remains a release/tag concern in Gospel.
+  # ============================================================
+  windows:
+    name: Build Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: .\build-windows.ps1
+
+      - name: Verify Windows artifact
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem `
+            -Path . `
+            -Filter "Moonfin_Windows_v*.exe" `
+            -File `
+            -ErrorAction SilentlyContinue
+
+          if (-not $artifacts -or $artifacts.Count -eq 0) {
+            throw "Windows build did not produce Moonfin_Windows_v*.exe"
+          }
+
+          Write-Host "Found Windows artifact(s):"
+          $artifacts | ForEach-Object {
+            Write-Host "  - $($_.Name)"
+          }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe-${{ github.ref_name }}
+          path: Moonfin_Windows_v*.exe
+          if-no-files-found: error
+
+
+  # ============================================================
+  # tvOS
+  #
+  # ONLY runs when the branch name contains "tvos".
+  #
+  # IMPORTANT:
+  # This job intentionally produces an UNSIGNED Runner.app.
+  #
+  # It does NOT:
+  # - configure Apple signing
+  # - archive for App Store Connect
+  # - create an IPA
+  # - upload to TestFlight
+  #
+  # The resulting Runner.app is uploaded directly as an artifact
+  # so it can be downloaded and signed locally.
+  # ============================================================
+  tvos:
+    name: Build tvOS (unsigned)
+    if: contains(github.ref_name, 'tvos')
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.3
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Install tvOS platform
+        run: |
+          sudo xcodebuild -runFirstLaunch || true
+          for i in 1 2 3 4 5 6; do
+            if xcodebuild -downloadPlatform tvOS; then
+              echo "tvOS platform installed on attempt $i"
+              exit 0
+            fi
+            echo "downloadPlatform attempt $i failed (known flaky runner bug); retrying in 25s"
+            sleep 25
+          done
+          echo "::error::tvOS platform install failed after 6 attempts"
+          exit 1
+
+      - name: Cache flutter-tvos toolchain
+        id: cache-fluttertvos
+        uses: actions/cache@v4
+        with:
+          path: ~/flutter-tvos
+          key: flutter-tvos-${{ env.FLUTTER_TVOS_REF }}-${{ runner.os }}-arm64
+
+      - name: Install flutter-tvos
+        if: steps.cache-fluttertvos.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$FLUTTER_TVOS_REF" \
+            https://github.com/fluttertv/flutter-tvos.git "$HOME/flutter-tvos"
+
+      - name: Add flutter-tvos to PATH and precache
+        run: |
+          echo "$HOME/flutter-tvos/bin" >> "$GITHUB_PATH"
+          "$HOME/flutter-tvos/bin/flutter-tvos" precache
+
+      - name: Resolve dependencies
+        run: |
+          flutter-tvos pub get
+
+      - name: Run tvOS pre-build configuration
+        env:
+          TVOS_DEVELOPMENT_TEAM: ${{ vars.TVOS_DEVELOPMENT_TEAM }}
+          TVOS_MAIN_BUNDLE_ID: ${{ vars.TVOS_MAIN_BUNDLE_ID }}
+          TVOS_TOPSHELF_BUNDLE_ID: ${{ vars.TVOS_TOPSHELF_BUNDLE_ID }}
+          TVOS_APP_GROUP: ${{ vars.TVOS_APP_GROUP }}
+        run: |
+          chmod +x pre-build.sh
+          ./pre-build.sh
+
+
+      # The flutter-tvos build prepares the Flutter project/settings but
+      # is not relied upon to produce the final signed application.
+      - name: Prepare Flutter build settings
+        run: |
+          flutter-tvos build tvos --release --no-tree-shake-icons --dart-define=MOONFIN_TVOS=true || true
+          test -f tvos/Flutter/Generated.xcconfig
+          grep -q '^FLUTTER_ROOT=' tvos/Flutter/Generated.xcconfig \
+            || echo "FLUTTER_ROOT=$HOME/flutter-tvos" >> tvos/Flutter/Generated.xcconfig
+
+      # flutter-tvos writes the plugin registry without a tvos section.
+      # Restore the tvOS plugin entries before CocoaPods reads it.
+      - name: Install pods
+        env:
+          LC_ALL: en_US.UTF-8
+        run: |
+          python3 tvos/scripts/restore_tvos_plugins.py
+          cd tvos
+          pod install
+
+      # Stage the Flutter assets where the Xcode copy phase expects them.
+      - name: Stage flutter_assets
+        run: |
+          DEST="tvos/Flutter/flutter_assets"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          SRC_APP=$(find build/tvos -maxdepth 3 -type d -path "*Release-appletvos/Runner.app/flutter_assets" | head -1)
+          if [ -n "$SRC_APP" ]; then
+            echo "Staging from assembled app bundle: $SRC_APP"
+            rsync -a "$SRC_APP/" "$DEST/"
+          else
+            echo "Staging from build/tvos bundle root"
+            rsync -a \
+              --exclude='*-appletvos' --exclude='*-appletvsimulator' \
+              --exclude='aot' --exclude='.last_build_id' \
+              --exclude='kernel_blob.bin' --exclude='vm_snapshot_data' \
+              --exclude='isolate_snapshot_data' \
+              build/tvos/ "$DEST/"
+          fi
+          test -f "$DEST/fonts/MaterialIcons-Regular.otf" \
+            || { echo "::error::MaterialIcons font missing from staged flutter_assets"; exit 1; }
+          test -f "$DEST/AssetManifest.bin" \
+            || { echo "::error::AssetManifest.bin missing from staged flutter_assets"; exit 1; }
+          echo "Staged flutter_assets:" && ls "$DEST"
+
+      # This is deliberately an unsigned Xcode build.
+      #
+      # CODE_SIGNING_ALLOWED=NO prevents Xcode from signing the app or
+      # embedded targets. CODE_SIGNING_REQUIRED=NO prevents Xcode from
+      # requiring a signing identity.
+      - name: Build unsigned Release app
+        run: |
+          xcodebuild \
+            -workspace tvos/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk appletvos \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Verify unsigned app
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-appletvos/Runner.app"
+
+          echo "Checking for app at:"
+          echo "$APP"
+
+          test -d "$APP" \
+            || {
+              echo "::error::Runner.app was not produced"
+              exit 1
+            }
+
+          test -f "$APP/Runner" \
+            || {
+              echo "::error::Runner executable is missing"
+              exit 1
+            }
+
+          test -f "$APP/flutter_assets/fonts/MaterialIcons-Regular.otf" \
+            || {
+              echo "::error::Built app is missing flutter_assets fonts"
+              exit 1
+            }
+
+          test -e "$APP/PlugIns/MoonfinTopShelf.appex/MoonfinTopShelf" \
+            || {
+              echo "::error::Top Shelf extension missing from PlugIns"
+              exit 1
+            }
+
+          echo ""
+          echo "=== Runner.app ==="
+          du -sh "$APP"
+
+          echo ""
+          echo "=== Runner.app contents ==="
+          find "$APP" -maxdepth 2 -print | sort
+
+      # Upload the .app itself, not an IPA.
+      #
+      # GitHub artifacts are zipped automatically, so the downloaded
+      # artifact will contain Runner.app without us creating an IPA.
+      - name: Package app artifact
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-appletvos/Runner.app"
+          ARTIFACT="$RUNNER_TEMP/moonfin-tvos-unsigned"
+
+          rm -rf "$ARTIFACT"
+          mkdir -p "$ARTIFACT"
+
+          cp -R "$APP" "$ARTIFACT/Runner.app"
+
+          echo "Artifact contents:"
+          find "$ARTIFACT" -maxdepth 2 -print | sort
+
+      - name: Upload unsigned tvOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonfin-tvos-unsigned-${{ github.ref_name }}
+          path: ${{ runner.temp }}/moonfin-tvos-unsigned/
+          if-no-files-found: error
