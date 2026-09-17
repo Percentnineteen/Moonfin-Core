@@ -11,16 +11,18 @@ import 'gamepad/gamepad_key_synthesizer.dart';
 
 /// Turns Siri Remote touchpad gestures into focus navigation.
 ///
-/// The gesture is treated as physical finger travel rather than a conventional
-/// swipe:
+/// Gesture behavior:
 ///
-/// - Small movement is ignored as touch noise.
-/// - The dominant axis is locked once established.
-/// - Slow movement remains deliberate.
-/// - Faster movement becomes progressively more responsive.
-/// - Direction reversals have a small hysteresis zone.
-/// - A sufficiently fast release produces a small amount of decaying
-///   momentum.
+///   Swipe + hold
+///     The finger continues moving slowly or comes to rest while held.
+///     Navigation continues at a velocity-dependent rate until release.
+///
+///   Flick
+///     A fast swipe followed by release continues with decaying momentum.
+///
+///   Flick + tap
+///     A click while momentum is active immediately cancels the momentum.
+///     Normal clicks are otherwise untouched.
 ///
 /// Navigation is emitted as real arrow key events through
 /// [GamepadKeySynthesizer].
@@ -37,6 +39,8 @@ class SiriRemoteGlide {
   bool _attached = false;
   bool _touching = false;
 
+  _GlideState _state = _GlideState.idle;
+
   double _lastX = 0;
   double _lastY = 0;
 
@@ -48,46 +52,49 @@ class SiriRemoteGlide {
 
   DateTime? _lastMoveTime;
 
-  bool _steppedThisGesture = false;
-
   _Axis? _axis;
   GamepadNavKey? _direction;
 
+  Timer? _navigationTimer;
   Timer? _momentumTimer;
+
   double _momentumVelocity = 0;
   double _momentumAccumulator = 0;
 
   // ---------------------------------------------------------------------------
-  // Gesture tuning
+  // Tuning
   // ---------------------------------------------------------------------------
 
-  /// Minimum movement before deciding whether this is horizontal or vertical.
-  ///
-  /// This is intentionally small because the remote coordinates are
-  /// normalized.
+  /// Movement before we decide whether the gesture is horizontal or vertical.
   static const double _axisLockDistance = 0.08;
 
-  /// How much more one axis must move than the other before locking.
+  /// Prevents a diagonal movement from immediately becoming an axis.
   static const double _axisLockRatio = 1.35;
 
   /// Opposite-direction travel required to commit to a reversal.
   static const double _reversalDistance = 0.12;
 
-  /// Velocity at which we consider the gesture "fast".
+  /// Velocity below which movement is considered deliberate/slow.
   static const double _slowVelocity = 0.8;
 
-  /// Velocity at which the response reaches its maximum acceleration.
+  /// Velocity at which the velocity response reaches its maximum.
   static const double _fastVelocity = 5.0;
 
-  /// Maximum reduction in step distance caused by high velocity.
-  ///
-  /// 0.18 = up to 18% less travel required at high speed.
+  /// Maximum reduction in physical travel required at high velocity.
   static const double _velocityResponse = 0.18;
 
-  /// Minimum velocity required to create post-release momentum.
+  /// Velocity at which the gesture is considered a fast flick.
   static const double _flickVelocity = 3.0;
 
-  /// Momentum update interval.
+  /// Slowest continuous navigation interval.
+  static const Duration _slowNavigationInterval =
+      Duration(milliseconds: 260);
+
+  /// Fastest continuous navigation interval.
+  static const Duration _fastNavigationInterval =
+      Duration(milliseconds: 70);
+
+  /// Interval used to update momentum.
   static const Duration _momentumInterval =
       Duration(milliseconds: 16);
 
@@ -96,6 +103,9 @@ class SiriRemoteGlide {
 
   /// Momentum stops below this velocity.
   static const double _minimumMomentumVelocity = 0.45;
+
+  /// How strongly momentum translates velocity into navigation steps.
+  static const double _momentumStepRate = 0.075;
 
   // ---------------------------------------------------------------------------
   // Public API
@@ -110,10 +120,11 @@ class SiriRemoteGlide {
 
   @visibleForTesting
   void debugReset() {
-    _cancelMomentum();
+    _stopAllTimers();
     _synthesizer.releaseAll();
 
     _touching = false;
+    _state = _GlideState.idle;
     _axis = null;
     _direction = null;
 
@@ -152,17 +163,27 @@ class SiriRemoteGlide {
       case TvRemoteTouchPhase.cancelled:
         _cancelGesture();
 
-      case TvRemoteTouchPhase.loc:
       case TvRemoteTouchPhase.clickStart:
+        _onClickStart();
+
       case TvRemoteTouchPhase.clickEnd:
+        // Normal click handling remains native.
+        break;
+
+      case TvRemoteTouchPhase.loc:
         break;
     }
   }
 
   void _beginGesture(double x, double y) {
-    _cancelMomentum();
+    // A new touch always cancels previous momentum.
+    _stopMomentum();
 
     _touching = true;
+    _state = _GlideState.tracking;
+
+    _axis = null;
+    _direction = null;
 
     _lastX = x;
     _lastY = y;
@@ -174,11 +195,6 @@ class SiriRemoteGlide {
     _velocityY = 0;
 
     _lastMoveTime = DateTime.now();
-
-    _steppedThisGesture = false;
-
-    _axis = null;
-    _direction = null;
   }
 
   void _onMove(double x, double y) {
@@ -226,8 +242,8 @@ class SiriRemoteGlide {
     final rawX = dx / dt;
     final rawY = dy / dt;
 
-    // Touch events can arrive at slightly irregular intervals. Smooth the
-    // velocity so one unusually large event doesn't cause a giant jump.
+    // Smooth the raw touch velocity. This prevents individual touch events
+    // from causing large changes in navigation speed.
     const smoothing = 0.20;
 
     _velocityX =
@@ -237,6 +253,14 @@ class SiriRemoteGlide {
     _velocityY =
         _velocityY * (1.0 - smoothing) +
             rawY * smoothing;
+  }
+
+  double get _activeVelocity {
+    if (_axis == _Axis.horizontal) {
+      return _velocityX;
+    }
+
+    return _velocityY;
   }
 
   // ---------------------------------------------------------------------------
@@ -267,95 +291,36 @@ class SiriRemoteGlide {
   }
 
   // ---------------------------------------------------------------------------
-  // Navigation
+  // Finger-driven navigation
   // ---------------------------------------------------------------------------
-
-  //void _processMovement() {
-  //  final horizontal = _axis == _Axis.horizontal;
-
-  //  final travel = horizontal ? _accX : _accY;
-  //  final velocity = horizontal ? _velocityX : _velocityY;
-
-  //  if (travel == 0) {
-  //    return;
-  //  }
-
-  //  final newDirection = horizontal
-  //      ? (travel > 0
-  //          ? GamepadNavKey.right
-  //          : GamepadNavKey.left)
-  //      : (travel > 0
-  //          ? GamepadNavKey.down
-  //          : GamepadNavKey.up);
-
-  //  // -----------------------------------------------------------------------
-  //  // Reversal hysteresis
-  //  // -----------------------------------------------------------------------
-
-  //  if (_direction != null &&
-  //      newDirection != _direction) {
-  //    if (travel.abs() < _reversalDistance) {
-  //      return;
-  //    }
-
-  //    // We've moved far enough in the opposite direction to commit.
-  //    _accX = horizontal ? travel : 0;
-  //    _accY = horizontal ? 0 : travel;
-
-  //    _direction = newDirection;
-  //  }
-
-  //  if (_direction == null) {
-  //    _direction = newDirection;
-  //  }
-
-  //  // -----------------------------------------------------------------------
-  //  // Velocity-sensitive travel
-  //  // -----------------------------------------------------------------------
-
-  //  final threshold = _effectiveStepTravel(
-  //    velocity.abs(),
-  //  );
-
-  //  if (travel.abs() < threshold) {
-  //    return;
-  //  }
-
-  //  _step(_direction!);
-
-  //  if (horizontal) {
-  //    _accX -= travel.sign * threshold;
-  //    _accY = 0;
-  //  } else {
-  //    _accY -= travel.sign * threshold;
-  //    _accX = 0;
-  //  }
-  //}
 
   void _processMovement() {
     final horizontal = _axis == _Axis.horizontal;
 
     final travel = horizontal ? _accX : _accY;
-    final velocity = horizontal ? _velocityX : _velocityY;
 
     if (travel == 0) {
       return;
     }
 
     final newDirection = horizontal
-      ? (travel > 0
-          ? GamepadNavKey.right
-          : GamepadNavKey.left)
-      : (travel > 0
-          ? GamepadNavKey.down
-          : GamepadNavKey.up);
+        ? (travel > 0
+            ? GamepadNavKey.right
+            : GamepadNavKey.left)
+        : (travel > 0
+            ? GamepadNavKey.down
+            : GamepadNavKey.up);
 
-    // Don't immediately reverse because of tiny finger corrections.
+    // -----------------------------------------------------------------------
+    // Direction reversal
+    // -----------------------------------------------------------------------
+
     if (_direction != null && newDirection != _direction) {
       if (travel.abs() < _reversalDistance) {
         return;
       }
 
+      // Discard the old direction's accumulated travel.
       _accX = horizontal ? travel : 0;
       _accY = horizontal ? 0 : travel;
 
@@ -367,15 +332,15 @@ class SiriRemoteGlide {
     }
 
     final threshold = _effectiveStepTravel(
-        velocity.abs(),
-        );
+      _activeVelocity.abs(),
+    );
 
     if (travel.abs() < threshold) {
+      _updateHoldNavigation();
       return;
     }
 
     _step(_direction!);
-    _steppedThisGesture = true;
 
     if (horizontal) {
       _accX -= travel.sign * threshold;
@@ -384,45 +349,88 @@ class SiriRemoteGlide {
       _accY -= travel.sign * threshold;
       _accX = 0;
     }
+
+    _state = _GlideState.swiping;
+
+    _updateHoldNavigation();
   }
 
-
-  //double _effectiveStepTravel(double velocity) {
-  //  final base = sensitivity.stepTravel;
-
-  //  final speed = ((velocity - _slowVelocity) /
-  //          (_fastVelocity - _slowVelocity))
-  //      .clamp(0.0, 1.0);
-
-  //  // Smooth acceleration curve.
-  //  final eased = speed * speed;
-
-  //  // At high velocity the finger needs slightly less physical travel to
-  //  // produce the next navigation event.
-  //  return base *
-  //      (1.0 - (_velocityResponse * eased));
-  //}
-
   double _effectiveStepTravel(double velocity) {
-    final base = _steppedThisGesture
-      ? sensitivity.stepTravel
-      : sensitivity.firstStepTravel;
+    final base = _state == _GlideState.tracking
+        ? sensitivity.firstStepTravel
+        : sensitivity.stepTravel;
 
     final speed = ((velocity - _slowVelocity) /
-        (_fastVelocity - _slowVelocity))
-      .clamp(0.0, 1.0);
+            (_fastVelocity - _slowVelocity))
+        .clamp(0.0, 1.0);
 
+    // Ease the velocity response so slow movements remain predictable.
     final eased = speed * speed;
 
     return base * (1.0 - (_velocityResponse * eased));
   }
 
+  // ---------------------------------------------------------------------------
+  // Swipe + hold
+  // ---------------------------------------------------------------------------
 
-  void _step(GamepadNavKey direction) {
-    _synthesizer.press(direction);
-    _synthesizer.release(direction);
+  void _updateHoldNavigation() {
+    if (!_touching || _direction == null) {
+      _stopNavigationTimer();
+      return;
+    }
 
-    _direction = direction;
+    final speed = _activeVelocity.abs();
+
+    if (speed < _slowVelocity) {
+      _stopNavigationTimer();
+      return;
+    }
+
+    if (_navigationTimer?.isActive ?? false) {
+      return;
+    }
+
+    final interval = _navigationInterval(speed);
+
+    _navigationTimer = Timer(
+      interval,
+      () {
+        _navigationTimer = null;
+
+        if (!_touching || _direction == null) {
+          return;
+        }
+
+        final currentSpeed = _activeVelocity.abs();
+
+        if (currentSpeed < _slowVelocity) {
+          return;
+        }
+
+        _step(_direction!);
+        _updateHoldNavigation();
+      },
+    );
+  }
+
+  Duration _navigationInterval(double velocity) {
+    final speed = ((velocity - _slowVelocity) /
+            (_fastVelocity - _slowVelocity))
+        .clamp(0.0, 1.0);
+
+    // Quadratic easing gives a gentle acceleration curve.
+    final eased = speed * speed;
+
+    final milliseconds =
+        _slowNavigationInterval.inMilliseconds +
+            ((_fastNavigationInterval.inMilliseconds -
+                    _slowNavigationInterval.inMilliseconds) *
+                eased);
+
+    return Duration(
+      milliseconds: milliseconds.round(),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -435,14 +443,17 @@ class SiriRemoteGlide {
     }
 
     _touching = false;
+    _stopNavigationTimer();
 
-    final velocity = _axis == _Axis.horizontal
-        ? _velocityX
-        : _velocityY;
+    final velocity = _activeVelocity;
 
     if (_axis != null &&
         velocity.abs() >= _flickVelocity) {
       _startMomentum(velocity);
+    } else {
+      _state = _GlideState.idle;
+      _axis = null;
+      _direction = null;
     }
 
     _lastMoveTime = null;
@@ -451,8 +462,9 @@ class SiriRemoteGlide {
   void _cancelGesture() {
     _touching = false;
 
-    _cancelMomentum();
+    _stopAllTimers();
 
+    _state = _GlideState.idle;
     _axis = null;
     _direction = null;
 
@@ -466,11 +478,13 @@ class SiriRemoteGlide {
   }
 
   // ---------------------------------------------------------------------------
-  // Momentum
+  // Flick + momentum
   // ---------------------------------------------------------------------------
 
   void _startMomentum(double velocity) {
-    _cancelMomentum();
+    _stopMomentum();
+
+    _state = _GlideState.momentum;
 
     _momentumVelocity = velocity;
     _momentumAccumulator = 0;
@@ -481,7 +495,7 @@ class SiriRemoteGlide {
         final speed = _momentumVelocity.abs();
 
         if (speed < _minimumMomentumVelocity) {
-          _cancelMomentum();
+          _stopMomentum();
           return;
         }
 
@@ -493,14 +507,11 @@ class SiriRemoteGlide {
                 ? GamepadNavKey.down
                 : GamepadNavKey.up);
 
-        // Convert velocity into fractional navigation distance.
-        //
-        // This is deterministic: there is no random chance involved.
         final normalizedSpeed =
             (speed / _fastVelocity).clamp(0.0, 1.0);
 
         _momentumAccumulator +=
-            normalizedSpeed * 0.075;
+            normalizedSpeed * _momentumStepRate;
 
         while (_momentumAccumulator >= 1.0) {
           _step(direction);
@@ -512,16 +523,66 @@ class SiriRemoteGlide {
     );
   }
 
-  void _cancelMomentum() {
+  // ---------------------------------------------------------------------------
+  // Flick + tap cancellation
+  // ---------------------------------------------------------------------------
+
+  void _onClickStart() {
+    if (_state != _GlideState.momentum) {
+      return;
+    }
+
+    // A tap during momentum is explicitly treated as "stop".
+    _stopMomentum();
+
+    _state = _GlideState.idle;
+    _axis = null;
+    _direction = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Timers
+  // ---------------------------------------------------------------------------
+
+  void _stopNavigationTimer() {
+    _navigationTimer?.cancel();
+    _navigationTimer = null;
+  }
+
+  void _stopMomentum() {
     _momentumTimer?.cancel();
     _momentumTimer = null;
 
     _momentumVelocity = 0;
     _momentumAccumulator = 0;
   }
+
+  void _stopAllTimers() {
+    _stopNavigationTimer();
+    _stopMomentum();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Key output
+  // ---------------------------------------------------------------------------
+
+  void _step(GamepadNavKey direction) {
+    _synthesizer.press(direction);
+    _synthesizer.release(direction);
+
+    _direction = direction;
+  }
+}
+
+enum _GlideState {
+  idle,
+  tracking,
+  swiping,
+  momentum,
 }
 
 enum _Axis {
   horizontal,
   vertical,
 }
+
