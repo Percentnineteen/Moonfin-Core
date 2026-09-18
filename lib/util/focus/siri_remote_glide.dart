@@ -45,7 +45,7 @@ class SiriRemoteGlide {
   double _velocityX = 0;
   double _velocityY = 0;
 
-  double _maxVelocity = 0;
+  double _holdVelocity = 0;
 
   DateTime? _lastMoveTime;
 
@@ -92,7 +92,7 @@ class SiriRemoteGlide {
     _velocityX = 0;
     _velocityY = 0;
 
-    _maxVelocity = 0;
+    _holdVelocity = 0;
 
     _lastMoveTime = null;
     _steppedThisGesture = false;
@@ -143,7 +143,7 @@ class SiriRemoteGlide {
     _velocityX = 0;
     _velocityY = 0;
 
-    _maxVelocity = 0;
+    _holdVelocity = 0;
 
     _lastMoveTime = DateTime.now();
 
@@ -192,8 +192,8 @@ class SiriRemoteGlide {
     final velocity = _activeVelocity.abs();
 
     // Keep the highest velocity reached during the entire gesture.
-    if (velocity > _maxVelocity) {
-      _maxVelocity = velocity;
+    if (velocity > _holdVelocity) {
+      _holdVelocity = velocity;
     }
 
     _processMovement();
@@ -324,32 +324,30 @@ class SiriRemoteGlide {
     if (!_touching ||
         !_steppedThisGesture ||
         _direction == null ||
-        _maxVelocity <= 0) {
+        _holdVelocity <= 0 ||
+        _holdTimer != null) {
       return;
     }
 
-    final interval = _effectiveHoldInterval(_maxVelocity);
-
-    // Recreate the timer so a newly reached maximum velocity immediately
-    // changes the hold rate.
-    _stopHoldTimer();
+    final interval = _effectiveHoldInterval(_holdVelocity);
 
     _holdTimer = Timer(
-      Duration(milliseconds: interval.round()),
-      () {
+        Duration(milliseconds: interval.round()),
+        () {
         _holdTimer = null;
 
         if (!_touching ||
             !_steppedThisGesture ||
             _direction == null) {
-          return;
+        return;
         }
 
         _step(_direction!);
         _startHoldTimer();
-      },
-    );
+        },
+        );
   }
+
 
   double _effectiveHoldInterval(double velocity) {
     // Physical swipe rate is approximately:
@@ -388,7 +386,7 @@ class SiriRemoteGlide {
     _velocityX = 0;
     _velocityY = 0;
 
-    _maxVelocity = 0;
+    _holdVelocity = 0;
 
     _lastMoveTime = null;
     _steppedThisGesture = false;
