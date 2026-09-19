@@ -20,6 +20,7 @@ import 'gamepad/gamepad_key_synthesizer.dart';
 ///   rate based on the maximum velocity reached during that swipe.
 /// - Slowing or stopping the finger does not slow the hold.
 /// - Releasing the finger stops navigation immediately.
+/// - Fast flicks of the finger result in a momentum with decay
 ///
 /// Navigation is emitted as real arrow key events through
 /// [GamepadKeySynthesizer].
@@ -45,7 +46,7 @@ class SiriRemoteGlide {
   double _velocityX = 0;
   double _velocityY = 0;
 
-  double _peakVelocity = 0;
+  double _velocity = 0;
 
   DateTime? _lastMoveTime;
 
@@ -55,6 +56,11 @@ class SiriRemoteGlide {
   GamepadNavKey? _direction;
 
   Timer? _stepTimer;
+  Timer? _heldTimer;
+
+  bool _held = false;
+  static const double _momentumDecay = 2.0;
+  static const Duration _holdThreshold = Duration(milliseconds: 500);
 
   // ---------------------------------------------------------------------------
   // Gesture tuning
@@ -80,9 +86,11 @@ class SiriRemoteGlide {
   @visibleForTesting
   void debugReset() {
     _stopStepTimer();
+    _stopHeldTimer();
     _synthesizer.releaseAll();
 
     _touching = false;
+    _held = false;
     _axis = null;
     _direction = null;
 
@@ -92,7 +100,7 @@ class SiriRemoteGlide {
     _velocityX = 0;
     _velocityY = 0;
 
-    _peakVelocity = 0;
+    _velocity = 0;
 
     _lastMoveTime = null;
     _steppedThisGesture = false;
@@ -132,7 +140,18 @@ class SiriRemoteGlide {
   void _beginGesture(double x, double y) {
     _stopStepTimer();
 
+    _stopHeldTimer();
+
     _touching = true;
+    _held = false;
+
+ 
+    _heldTimer = Timer(_holdThreshold, () {
+      if (_touching) {
+        _held = true;
+      }
+    });
+
 
     _lastX = x;
     _lastY = y;
@@ -143,7 +162,7 @@ class SiriRemoteGlide {
     _velocityX = 0;
     _velocityY = 0;
 
-    _peakVelocity = 0;
+    _velocity = 0;
 
     _lastMoveTime = DateTime.now();
 
@@ -192,8 +211,8 @@ class SiriRemoteGlide {
     final velocity = _activeVelocity.abs();
 
     // Keep the highest velocity reached during the entire gesture.
-    if (velocity > _peakVelocity) {
-      _peakVelocity = velocity;
+    if (velocity > _velocity) {
+      _velocity = velocity;
       if (_stepTimer != null) {
         _stopStepTimer();
         _startStepTimer();
@@ -321,32 +340,39 @@ class SiriRemoteGlide {
   }
 
   // ---------------------------------------------------------------------------
-  // Hold navigation
+  // Navigation steps
   // ---------------------------------------------------------------------------
 
   void _startStepTimer() {
-    if (!_touching ||
-        !_steppedThisGesture ||
-        _direction == null ||
-        _peakVelocity <= 0 ||
+    if (_direction == null ||
+        _velocity <= 0 ||
         _stepTimer != null) {
       return;
     }
 
-    final interval = _effectiveHoldInterval(_peakVelocity);
+    final interval = _effectiveHoldInterval(_velocity);
 
     _stepTimer = Timer(
         Duration(milliseconds: interval.round()),
         () {
         _stepTimer = null;
 
-        if (!_touching ||
-            !_steppedThisGesture ||
-            _direction == null) {
+        if (_direction == null || _velocity <= 0) {
         return;
         }
 
         _step(_direction!);
+
+        if (!_touching && !_held) {
+          _velocity -= _momentumDecay;
+
+          if (_velocity <= 1.0) {
+            _velocity = 0;
+            _stopStepTimer();
+            return;
+          }
+        }
+
         _startStepTimer();
         },
         );
@@ -378,19 +404,21 @@ class SiriRemoteGlide {
 
     _touching = false;
 
-    // No momentum: releasing the remote immediately stops hold navigation.
+    _stopHeldTimer();
+
+    if (_held) {
     _stopStepTimer();
+      _velocity = 0;
+      _direction = null;
+      _held = false;
+    }
 
     _axis = null;
-    _direction = null;
-
     _accX = 0;
     _accY = 0;
 
     _velocityX = 0;
     _velocityY = 0;
-
-    _peakVelocity = 0;
 
     _lastMoveTime = null;
     _steppedThisGesture = false;
@@ -403,6 +431,11 @@ class SiriRemoteGlide {
   void _stopStepTimer() {
     _stepTimer?.cancel();
     _stepTimer = null;
+  }
+
+  void _stopHeldTimer() {
+    _heldTimer?.cancel();
+    _heldTimer = null;
   }
 
   // ---------------------------------------------------------------------------
