@@ -9,6 +9,11 @@ import '../../preference/preference_constants.dart'
     show SiriRemoteSwipeSensitivity;
 import 'gamepad/gamepad_key_synthesizer.dart';
 
+import 'package:get_it/get_it.dart';
+import '../../data/services/log_service.dart';
+final log = GetIt.instance<LogService>();
+
+
 /// Turns Siri Remote touchpad gestures into focus navigation.
 ///
 /// The gesture is treated as physical finger travel:
@@ -60,6 +65,7 @@ class SiriRemoteGlide {
 
   bool _held = false;
   static const double _momentumDecay = 2.0;
+  static const double _momentumVelocityCutoff = 2.0;
   static const Duration _holdThreshold = Duration(milliseconds: 500);
 
   // ---------------------------------------------------------------------------
@@ -249,6 +255,13 @@ class SiriRemoteGlide {
     _velocityY =
         _velocityY * (1.0 - smoothing) +
             rawY * smoothing;
+
+    log.playback(
+        'dt=${dt.toStringAsFixed(3)} '
+        'raw=${math.sqrt(rawX * rawX + rawY * rawY).toStringAsFixed(2)} '
+        'smooth=${math.sqrt(_velocityX * _velocityX + _velocityY * _velocityY).toStringAsFixed(2)} '
+        'peak=${_velocity.toStringAsFixed(2)}',
+        );
   }
 
   double get _activeVelocity {
@@ -345,7 +358,7 @@ class SiriRemoteGlide {
 
   void _startStepTimer() {
     if (_direction == null ||
-        _velocity <= 0 ||
+        _velocity <= _momentumVelocityCutoff ||
         _stepTimer != null) {
       return;
     }
@@ -357,16 +370,25 @@ class SiriRemoteGlide {
         () {
         _stepTimer = null;
 
-        if (_direction == null || _velocity <= 0) {
-        return;
+        if (_direction == null || _velocity <= _momentumVelocityCutoff) {
+          _velocity = 0;
+          _direction = null;
+          return;
         }
 
         _step(_direction!);
 
         if (!_touching && !_held) {
-          _velocity -= _momentumDecay;
+          final dt = interval / 1000.0;
 
-          if (_velocity <= 1.0) {
+          log.playback(
+              'DECAY velocity=${_velocity.toStringAsFixed(2)} '
+              'interval=${interval.toStringAsFixed(0)}ms',
+              );
+
+          _velocity *= math.exp(-_momentumDecay * dt);
+
+          if (_velocity <= _momentumVelocityCutoff) {
             _velocity = 0;
             _stopStepTimer();
             return;
@@ -407,7 +429,7 @@ class SiriRemoteGlide {
     _stopHeldTimer();
 
     if (_held) {
-    _stopStepTimer();
+      _stopStepTimer();
       _velocity = 0;
       _direction = null;
       _held = false;
