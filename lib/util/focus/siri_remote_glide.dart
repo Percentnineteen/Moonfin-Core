@@ -45,7 +45,7 @@ class SiriRemoteGlide {
   double _velocityX = 0;
   double _velocityY = 0;
 
-  double _holdVelocity = 0;
+  double _peakVelocity = 0;
 
   DateTime? _lastMoveTime;
 
@@ -54,7 +54,7 @@ class SiriRemoteGlide {
   _Axis? _axis;
   GamepadNavKey? _direction;
 
-  Timer? _holdTimer;
+  Timer? _stepTimer;
 
   // ---------------------------------------------------------------------------
   // Gesture tuning
@@ -79,7 +79,7 @@ class SiriRemoteGlide {
 
   @visibleForTesting
   void debugReset() {
-    _stopHoldTimer();
+    _stopStepTimer();
     _synthesizer.releaseAll();
 
     _touching = false;
@@ -92,7 +92,7 @@ class SiriRemoteGlide {
     _velocityX = 0;
     _velocityY = 0;
 
-    _holdVelocity = 0;
+    _peakVelocity = 0;
 
     _lastMoveTime = null;
     _steppedThisGesture = false;
@@ -130,7 +130,7 @@ class SiriRemoteGlide {
   }
 
   void _beginGesture(double x, double y) {
-    _stopHoldTimer();
+    _stopStepTimer();
 
     _touching = true;
 
@@ -143,7 +143,7 @@ class SiriRemoteGlide {
     _velocityX = 0;
     _velocityY = 0;
 
-    _holdVelocity = 0;
+    _peakVelocity = 0;
 
     _lastMoveTime = DateTime.now();
 
@@ -192,14 +192,18 @@ class SiriRemoteGlide {
     final velocity = _activeVelocity.abs();
 
     // Keep the highest velocity reached during the entire gesture.
-    if (velocity > _holdVelocity) {
-      _holdVelocity = velocity;
+    if (velocity > _peakVelocity) {
+      _peakVelocity = velocity;
+      if (_stepTimer != null) {
+        _stopStepTimer();
+        _startStepTimer();
+      }
     }
 
     _processMovement();
 
     if (_steppedThisGesture) {
-      _startHoldTimer();
+      _startStepTimer();
     }
   }
 
@@ -320,21 +324,21 @@ class SiriRemoteGlide {
   // Hold navigation
   // ---------------------------------------------------------------------------
 
-  void _startHoldTimer() {
+  void _startStepTimer() {
     if (!_touching ||
         !_steppedThisGesture ||
         _direction == null ||
-        _holdVelocity <= 0 ||
-        _holdTimer != null) {
+        _peakVelocity <= 0 ||
+        _stepTimer != null) {
       return;
     }
 
-    final interval = _effectiveHoldInterval(_holdVelocity);
+    final interval = _effectiveHoldInterval(_peakVelocity);
 
-    _holdTimer = Timer(
+    _stepTimer = Timer(
         Duration(milliseconds: interval.round()),
         () {
-        _holdTimer = null;
+        _stepTimer = null;
 
         if (!_touching ||
             !_steppedThisGesture ||
@@ -343,7 +347,7 @@ class SiriRemoteGlide {
         }
 
         _step(_direction!);
-        _startHoldTimer();
+        _startStepTimer();
         },
         );
   }
@@ -375,7 +379,7 @@ class SiriRemoteGlide {
     _touching = false;
 
     // No momentum: releasing the remote immediately stops hold navigation.
-    _stopHoldTimer();
+    _stopStepTimer();
 
     _axis = null;
     _direction = null;
@@ -386,7 +390,7 @@ class SiriRemoteGlide {
     _velocityX = 0;
     _velocityY = 0;
 
-    _holdVelocity = 0;
+    _peakVelocity = 0;
 
     _lastMoveTime = null;
     _steppedThisGesture = false;
@@ -396,9 +400,9 @@ class SiriRemoteGlide {
   // Timer
   // ---------------------------------------------------------------------------
 
-  void _stopHoldTimer() {
-    _holdTimer?.cancel();
-    _holdTimer = null;
+  void _stopStepTimer() {
+    _stepTimer?.cancel();
+    _stepTimer = null;
   }
 
   // ---------------------------------------------------------------------------
