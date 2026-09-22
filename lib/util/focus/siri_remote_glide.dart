@@ -26,10 +26,11 @@ final log = GetIt.instance<LogService>();
 //   the movement stops at gesture end
 // - If the gesture lasts shorter than _holdThreshold
 //   the gesture registers as a "flick" and velocity decays
-//   at _momentumDecay rate
+//   at _momentumDecay rate following an exponential decay
 //
 // Navigation is emitted as real arrow key events through
 // [GamepadKeySynthesizer].
+
 class SiriRemoteGlide {
   SiriRemoteGlide._();
 
@@ -43,6 +44,7 @@ class SiriRemoteGlide {
   bool _attached = false;
   bool _touching = false;
   bool _held = false;
+  bool _stepConsumed = false;
 
   double _lastX = 0;
   double _lastY = 0;
@@ -63,10 +65,10 @@ class SiriRemoteGlide {
   // ---------------------------------------------------------------------------
 
   // Rate at which velocity of a flick decays.
-  static const double _momentumDecay = 5.0;
+  static const double _momentumDecay = 10.0;
 
   // Rate below which a gesture is ignored. (step/second)
-  static const double _minStepRate = 0.75;
+  static const double _minStepRate = 1.0;
 
   // Gesture duration before a flick becomes a glide.
   static const Duration _holdThreshold = Duration(milliseconds: 500);
@@ -95,6 +97,7 @@ class SiriRemoteGlide {
     _held = false;
     _axis = null;
     _direction = null;
+    _stepConsumed = false;
 
     _stepRate = 0;
 
@@ -144,6 +147,7 @@ class SiriRemoteGlide {
     _stepRate = 0;
     _axis = null;
     _direction = null;
+    _stepConsumed = false;
  
     // Start timing the gesture.
     _stopWatch
@@ -166,24 +170,13 @@ class SiriRemoteGlide {
     // Current time in seconds.
     final dt = _stopWatch.elapsedMicroseconds / 1000000.0;
 
-    // log.playback(
-    //     'dt=${dt.toStringAsFixed(3)} '
-    //     'x=${x.toStringAsFixed(3)} '
-    //     'y=${y.toStringAsFixed(3)} '
-    //     'dx=${dx.toStringAsFixed(3)} '
-    //     'dy=${dy.toStringAsFixed(3)} '
-    //     );
-
-    // TODO: should this be configurable? Slowest step
-    // TODO: consider if this should return
-    // if (dt <= 0 || dt > 0.25) {
-    //   log.playback('rejected: out of range: ${dt.toStringAsFixed(3)}');
-    //   return;
-    // }
+    if (dt <= 0) {
+      return;
+    }
 
     _updateStepRate(dx, dy, dt);
 
-    if (_axis != null && _direction != null && _stepRate >= _minStepRate) {
+    if (_stepConsumed == true) {
       _lastX = x;
       _lastY = y;
       _stopWatch.reset();
@@ -197,50 +190,45 @@ class SiriRemoteGlide {
   // ---------------------------------------------------------------------------
 
   void _updateStepRate(double dx, double dy, double dt) {
-    if (_axis == null) {
+    // Lock axis of movement after first step
+    // stepRate is only 0 when a step has not happened
+    if (_stepRate == 0) {
       _updateAxis(dx, dy);
     }
-    final double dist = _axis == _Axis.horizontal ? dx.abs() : dy.abs();
+
+    final lastDirection = _direction;
+    _updateDirection(dx, dy);
 
     final threshold = _stepRate == 0
       ? sensitivity.firstStepTravel
       : sensitivity.stepTravel;
+
+    final dist = _axis == _Axis.horizontal ? dx.abs() : dy.abs();
+
+    // Don't calculate stepRate on < 1 step.
     if (dist < threshold) {
-      // log.playback(
-      // 'rejected: dist too small '
-      // 'dist=${dist.toStringAsFixed(5)} '
-      // 'threshold=${threshold.toStringAsFixed(5)} '
-      // );
-      _axis = null;
+      _stepConsumed = false;
       return;
     }
+    _stepConsumed = true;
 
-    final double steps = _stepRate == 0
+    final steps = _stepRate == 0
       ? 1 + (dist - sensitivity.firstStepTravel) / sensitivity.stepTravel
       : dist / sensitivity.stepTravel;
 
-    final double currStepRate = _smoothing * (steps / dt) + (1.0 - _smoothing) * _stepRate;
+    // TODO: there is a problem with changing direction.
+    final currStepRate = _smoothing * (steps / dt) + (1.0 - _smoothing) * _stepRate;
 
     // Reject stepRates that are too small.
     if (currStepRate <= _minStepRate) {
-      log.playback('rejected: rate too small');
       return;
     }
 
-    final GamepadNavKey? lastDirection = _direction;
-    _updateDirection(dx, dy);
-
+    // Change stepRate if it is larger OR changed direction.
     if (currStepRate > _stepRate || lastDirection != _direction) {
       _stepRate = currStepRate;
       _stopStepTimer();
     }
-
-    // TODO: remove this logging
-    log.playback(
-        'dt=${dt.toStringAsFixed(3)} '
-        'stepRate=${_stepRate.toStringAsFixed(3)} '
-        'thisStepRate=${currStepRate.toStringAsFixed(3)} '
-        );
   }
 
   // ---------------------------------------------------------------------------
@@ -255,10 +243,10 @@ class SiriRemoteGlide {
   // Direction
   // ---------------------------------------------------------------------------
 
-  void _updateDirection(double x, double y) {
+  void _updateDirection(double dx, double dy) {
     final horizontal = _axis == _Axis.horizontal;
 
-    final travel = horizontal ? x : y;
+    final travel = horizontal ? dx : dy;
 
     _direction = horizontal
         ? (travel > 0
@@ -278,11 +266,8 @@ class SiriRemoteGlide {
       return;
     }
 
-    final double interval = 1.0 / _stepRate;
-    log.playback(
-        'stepRate=${_stepRate.toStringAsFixed(3)} '
-        'interval=${interval.toStringAsFixed(3)} '
-        );
+    // Seconds per step.
+    final interval = 1.0 / _stepRate;
 
     _stepTimer = Timer(
         Duration(milliseconds: (interval * 1000).round()),
@@ -299,6 +284,9 @@ class SiriRemoteGlide {
 
         if (!_touching && !_held) {
 
+          // Decay v = v0 * e^(-k*t)
+          // t is time between steps
+          // k is the decay constant
           _stepRate *= math.exp(-_momentumDecay * interval);
 
           if (_stepRate <= _minStepRate) {
