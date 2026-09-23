@@ -2,8 +2,12 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
+// TODO: do I need PointerDeviceKind
+
 import 'package:flutter_tvos/flutter_tvos.dart'
     show TvRemoteController, TvRemoteTouchEvent, TvRemoteTouchPhase;
+
+import 'package:flutter/gestures.dart';
 
 import '../../preference/preference_constants.dart'
     show SiriRemoteSwipeSensitivity;
@@ -40,6 +44,8 @@ class SiriRemoteGlide {
       SiriRemoteSwipeSensitivity.medium;
 
   final GamepadKeySynthesizer _synthesizer = GamepadKeySynthesizer();
+
+  final VelocityTracker _velocityTracker = VelocityTracker.withKind(PointerDeviceKind.trackpad);
 
   bool _attached = false;
   bool _touching = false;
@@ -173,6 +179,8 @@ class SiriRemoteGlide {
     // Current time in seconds.
     final dt = _stopWatch.elapsedMicroseconds / 1000000.0;
 
+    _velocityTracker.addPosition(_stopWatch.elapsed, Offset(x, y));
+
     if (dt <= 0) {
       return;
     }
@@ -185,10 +193,17 @@ class SiriRemoteGlide {
     _stopWatch.reset();
 
     if (!stepRateUpdated) return;
+
+    final velocity = _velocityTracker.getVelocity();
+    final vx = velocity.pixelsPerSecond.dx;
+    final vy = velocity.pixelsPerSecond.dy;
+
     _step(_direction!);
-      log.playback(
-          'step emitted at stepRate=${_stepRate.toStringAsFixed(3)} '
-      );
+    log.playback(
+        'step emitted at stepRate=${_stepRate.toStringAsFixed(3)}\n'
+        'vx is ${vx.toStringAsFixed(3)}\n'
+        'vy is ${vy.toStringAsFixed(3)}\n'
+    );
     _startStepTimer();
   }
 
