@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
-// TODO: do I need PointerDeviceKind
 
 import 'package:flutter_tvos/flutter_tvos.dart'
     show TvRemoteController, TvRemoteTouchEvent, TvRemoteTouchPhase;
@@ -39,36 +38,48 @@ class SiriRemoteGlide {
   SiriRemoteGlide._();
 
   static final SiriRemoteGlide instance = SiriRemoteGlide._();
+  final GamepadKeySynthesizer _synthesizer = GamepadKeySynthesizer();
 
   SiriRemoteSwipeSensitivity sensitivity =
       SiriRemoteSwipeSensitivity.medium;
 
-  final GamepadKeySynthesizer _synthesizer = GamepadKeySynthesizer();
-
-  final VelocityTracker _velocityTracker = VelocityTracker.withKind(PointerDeviceKind.trackpad);
+  VelocityTracker _velocityTracker = VelocityTracker.withKind(PointerDeviceKind.trackpad);
 
   bool _attached = false;
   bool _touching = false;
   bool _held = false;
-  bool _stepReady = false;
+  bool? _isVertical = null;
 
-  double _lastX = 0;
-  double _lastY = 0;
+  double? _peakVelocity = null;
+  // Observed velocity is +/- 30 out of VelocityTracker
+  // Need to normalize it to a min/max
+  // +/- 0.5 -- treat as dead
+  // >= abs(25) -- treat as max
+  // min speed 1 step/s
+  // max speed 10 step/s
+  /*
+      Observed velocity +/- 30 from VelocityTracker
+      1. Clamp <= abs(0.5) to 0 (adjust for sensitivity)
+      2. Clamp <= abs(25) to 10 (adjust for sensitivity)
+      3. Consider max/min step/s (max is limited by _pollingRate)
+      4. ** Could decouple pollingRate with a stepRate timer for finer granularity **
+      5. peakVelocity could be named something else and be the number of ticks of the clock before firing a new step
+  */
 
-  double _stepRate = 0;
+  GamepadNavKey? _direction;
+
+  Timer? _pollTimer;
+  Timer? _heldTimer;
 
   final Stopwatch _stopWatch = Stopwatch();
 
-  // TODO: consider bool? horizontal;
-  _Axis? _axis;
-  GamepadNavKey? _direction;
-
-  Timer? _stepTimer;
-  Timer? _heldTimer;
 
   // ---------------------------------------------------------------------------
   // Gesture tuning
   // ---------------------------------------------------------------------------
+
+  // Polling rate; minimum step interval
+  static const Duration _pollingRate = Duration(milliseconds:100);
 
   // Rate at which velocity of a flick decays.
   static const double _momentumDecay = 1.0;
@@ -99,17 +110,18 @@ class SiriRemoteGlide {
   @visibleForTesting
   void debugReset() {
     _synthesizer.releaseAll();
-    _stopStepTimer();
+    _stopPollTimer();
     _stopHeldTimer();
 
     _touching = false;
     _held = false;
-    _axis = null;
+    _isVertical = null;
     _direction = null;
-    _stepReady = false;
+    _peakVelocity = null;
 
-    _stepRate = 0;
-
+    _stopWatch
+        ..stop()
+        ..reset();
   }
 
   @visibleForTesting
@@ -129,7 +141,6 @@ class SiriRemoteGlide {
           _beginGesture(event.x, event.y);
           return;
         }
-
         _onMove(event.x, event.y);
 
       case TvRemoteTouchPhase.ended:
@@ -145,127 +156,30 @@ class SiriRemoteGlide {
 
   void _beginGesture(double x, double y) {
     // Stop timers.
-    _stopStepTimer();
+    _stopPollTimer();
     _stopHeldTimer();
 
     // Set initial gesture conditions.
     _touching = true;
     _held = false;
-    _lastX = x;
-    _lastY = y;
-    _stepRate = 0;
-    _axis = null;
+    _isVertical = null;
     _direction = null;
-    _stepReady = false;
+    _peakVelocity = null;
  
     // Start timing the gesture.
     _stopWatch
       ..reset()
       ..start();
 
-    // TODO: make this a function
-    _heldTimer = Timer(_holdThreshold, () {
-      if (_touching) {
-        _held = true;
-      }
-    });
+    _velocityTracker = VelocityTracker.withKind(PointerDeviceKind.trackpad);
+    _velocityTracker.addPosition(_stopWatch.elapsed, Offset(x, y));
+
+    _startHeldTimer();
+    _startPollTimer();
   }
 
   void _onMove(double x, double y) {
-    // The accumulated distance since the last processed movement.
-    final dx = x - _lastX;
-    final dy = y - _lastY;
-
-    // Current time in seconds.
-    final dt = _stopWatch.elapsedMicroseconds / 1000000.0;
-
     _velocityTracker.addPosition(_stopWatch.elapsed, Offset(x, y));
-
-    if (dt <= 0) {
-      return;
-    }
-
-    final stepRateUpdated = _updateStepRate(dx, dy, dt);
-
-    if (!_stepReady) return;
-    _lastX = x;
-    _lastY = y;
-    _stopWatch.reset();
-
-    if (!stepRateUpdated) return;
-
-    final velocity = _velocityTracker.getVelocity();
-    final vx = velocity.pixelsPerSecond.dx;
-    final vy = velocity.pixelsPerSecond.dy;
-
-    _step(_direction!);
-    log.playback(
-        'step emitted at stepRate=${_stepRate.toStringAsFixed(3)}\n'
-        'vx is ${vx.toStringAsFixed(3)}\n'
-        'vy is ${vy.toStringAsFixed(3)}\n'
-    );
-    _startStepTimer();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Velocity
-  // ---------------------------------------------------------------------------
-
-  // Returns true only if the step rate was updated
-  bool _updateStepRate(double dx, double dy, double dt) {
-    _stepReady = false;
-
-    // Lock axis and direction of movement after first step.
-    // stepRate is only 0 when a step has not happened yet.
-    if (_stepRate == 0) {
-      _updateAxis(dx, dy);
-      _direction = _updateDirection(dx, dy);
-    }
-
-    if (_direction != _updateDirection(dx, dy)) {
-      // Reset progress for the next event.
-      _stepReady = true;
-      return false;
-    }
-
-    // TODO: CONSIDER:
-    //    1. maximum dt (throw away samples that are too "long")
-    //    2. better state machine?
-    //    3. sensitivity to flick seems touchy -- figure out why?
-
-    final threshold = _stepRate == 0
-      ? sensitivity.firstStepTravel
-      : sensitivity.stepTravel;
-
-    final dist = _axis == _Axis.horizontal ? dx.abs() : dy.abs();
-
-    // Not enough movement for a step -- accumulate more.
-    if (dist < threshold) {
-      return false;
-    }
-
-    _stepReady = true;
-
-    final steps = _stepRate == 0
-      ? 1 + (dist - sensitivity.firstStepTravel) / sensitivity.stepTravel
-      : dist / sensitivity.stepTravel;
-
-    final currStepRate = _stepRate == 0
-      ? _smoothing * (steps / dt) + (1.0 - _smoothing) * _stepRate
-      : (steps / dt);
-
-    // Reject stepRates that are too small.
-    if (currStepRate <= _minStepRate) {
-      return false;
-    }
-
-    // Change stepRate if it is larger
-    if (currStepRate > _stepRate) {
-      _stepRate = currStepRate;
-      _stopStepTimer();
-      return true;
-    }
-    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -273,68 +187,44 @@ class SiriRemoteGlide {
   // ---------------------------------------------------------------------------
 
   void _updateAxis(double x, double y) {
-    _axis = x.abs() >= y.abs() ? _Axis.horizontal : _Axis.vertical;
+    _isVertical = y.abs() > x.abs() ? true : false;
   }
 
   // ---------------------------------------------------------------------------
   // Direction
   // ---------------------------------------------------------------------------
 
-  GamepadNavKey _updateDirection(double dx, double dy) {
-    final horizontal = _axis == _Axis.horizontal;
-
-    final travel = horizontal ? dx : dy;
-
-    return horizontal
-        ? (travel > 0
-            ? GamepadNavKey.right
-            : GamepadNavKey.left)
-        : (travel > 0
-            ? GamepadNavKey.down
-            : GamepadNavKey.up);
+  void _updateDirection(double dx, double dy) {
   }
 
   // ---------------------------------------------------------------------------
   // Navigation steps
   // ---------------------------------------------------------------------------
 
-  void _startStepTimer() {
-    if (_stepTimer != null) {
+  void _startPollTimer() {
+    if (_pollTimer != null) {
       return;
     }
 
-    // Seconds per step.
-    final interval = 1.0 / _stepRate;
+    _pollTimer = Timer.periodic(
+        _pollingRate,
+        (_) {
+          final velocity = _velocityTracker.getVelocityEstimate();
+          if (velocity == null) return;
 
-    _stepTimer = Timer(
-        Duration(microseconds: (interval * 1000000).round()),
-        () {
-        _stepTimer = null;
+          final vx = velocity.pixelsPerSecond.dx;
+          final vy = velocity.pixelsPerSecond.dy;
+          final confidence = velocity.confidence;
+          final duration = velocity.duration;
 
-        if (_direction == null || _stepRate <= _minStepRate) {
-          _stepRate = 0;
-          _stepReady = false;
-          return;
-        }
-
-        _step(_direction!);
-        if (!_touching && !_held) {
-
-          // Decay v = v0 * e^(-k*t)
-          // t is time between steps
-          // k is the decay constant
-          _stepRate *= math.exp(-_momentumDecay * interval);
-
-          if (_stepRate <= _minFlickStepRate) {
-            _stepRate = 0;
-            _stopStepTimer();
-            return;
-          }
-        }
-
-        _startStepTimer();
+          log.playback(
+            'vx is ${vx.toStringAsFixed(3)}\n'
+            'vy is ${vy.toStringAsFixed(3)}\n'
+            'confidence is ${confidence.toStringAsFixed(3)}\n'
+            'duration is ${duration.inMilliseconds}ms\n'
+          );
         },
-        );
+    );
   }
 
 
@@ -348,27 +238,24 @@ class SiriRemoteGlide {
     }
 
     _touching = false;
+    _held = false;
+    _isVertical = null;
+    _direction = null;
 
     _stopHeldTimer();
-    _stopWatch.stop();
-
-    if (_held) {
-      _stopStepTimer();
-      _stepRate = 0;
-      _direction = null;
-      _held = false;
-    }
-
-    _axis = null;
+    _stopPollTimer();
+    _stopWatch
+        ..stop()
+        ..reset();
   }
 
   // ---------------------------------------------------------------------------
   // Timer
   // ---------------------------------------------------------------------------
 
-  void _stopStepTimer() {
-    _stepTimer?.cancel();
-    _stepTimer = null;
+  void _stopPollTimer() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
   }
 
   void _stopHeldTimer() {
@@ -376,17 +263,39 @@ class SiriRemoteGlide {
     _heldTimer = null;
   }
 
-  // ---------------------------------------------------------------------------
-  // Output
-  // ---------------------------------------------------------------------------
-
-  void _step(GamepadNavKey direction) {
-    _synthesizer.press(direction);
-    _synthesizer.release(direction);
+  void _startHeldTimer() {
+    if (_heldTimer != null) {
+      return;
+    }
+    _heldTimer = Timer(_holdThreshold, () {
+      if (_touching) {
+        _held = true;
+      }
+    });
   }
-}
 
-enum _Axis {
-  horizontal,
-  vertical,
+  double mapVelocity(
+      double velocity, {
+      required double minVelocity,
+      required double maxVelocity,
+      required double minStepRate,
+      required double maxStepRate,
+      }) {
+    final v = velocity.clamp(-maxVelocity, maxVelocity);
+
+    if (v.abs() < minVelocity) {
+      return 0;
+    }
+
+    final magnitude = v.abs();
+
+    final t = (magnitude - minVelocity) /
+      (maxVelocity - minVelocity);
+
+    final stepRate = minStepRate +
+      t * (maxStepRate - minStepRate);
+
+    return v.isNegative ? -stepRate : stepRate;
+  }
+
 }
