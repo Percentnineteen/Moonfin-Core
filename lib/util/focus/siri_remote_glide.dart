@@ -177,14 +177,14 @@ class SiriRemoteGlide {
       return;
     }
 
-    _updateStepRate(dx, dy, dt);
+    final stepRateUpdated = _updateStepRate(dx, dy, dt);
 
     if (!_stepReady) return;
     _lastX = x;
     _lastY = y;
     _stopWatch.reset();
 
-    if (_stepRate < _minStepRate) return;
+    if (!stepRateUpdated) return;
     _step(_direction!);
       log.playback(
           'step emitted at stepRate=${_stepRate.toStringAsFixed(3)} '
@@ -196,7 +196,8 @@ class SiriRemoteGlide {
   // Velocity
   // ---------------------------------------------------------------------------
 
-  void _updateStepRate(double dx, double dy, double dt) {
+  // Returns true only if the step rate was updated
+  bool _updateStepRate(double dx, double dy, double dt) {
     _stepReady = false;
 
     // Lock axis and direction of movement after first step.
@@ -209,12 +210,13 @@ class SiriRemoteGlide {
     if (_direction != _updateDirection(dx, dy)) {
       // Reset progress for the next event.
       _stepReady = true;
-      return;
+      return false;
     }
 
-    // This will result in a slow glide right followed by a fast left resulting in
-    // slow travel right then fast travel RIGHT
-    // TODO: I need to get rid of any distances that are the wrong direction
+    // TODO: CONSIDER:
+    //    1. maximum dt (throw away samples that are too "long")
+    //    2. better state machine?
+    //    3. sensitivity to flick seems touchy -- figure out why?
 
     final threshold = _stepRate == 0
       ? sensitivity.firstStepTravel
@@ -224,7 +226,7 @@ class SiriRemoteGlide {
 
     // Not enough movement for a step -- accumulate more.
     if (dist < threshold) {
-      return;
+      return false;
     }
 
     _stepReady = true;
@@ -239,14 +241,16 @@ class SiriRemoteGlide {
 
     // Reject stepRates that are too small.
     if (currStepRate <= _minStepRate) {
-      return;
+      return false;
     }
 
     // Change stepRate if it is larger
     if (currStepRate > _stepRate) {
       _stepRate = currStepRate;
       _stopStepTimer();
+      return true;
     }
+    return false;
   }
 
   // ---------------------------------------------------------------------------
