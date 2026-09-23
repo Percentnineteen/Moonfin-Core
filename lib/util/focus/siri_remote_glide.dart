@@ -199,16 +199,22 @@ class SiriRemoteGlide {
   void _updateStepRate(double dx, double dy, double dt) {
     _stepReady = false;
 
-    // Lock axis of movement after first step
-    // stepRate is only 0 when a step has not happened
+    // Lock axis and direction of movement after first step.
+    // stepRate is only 0 when a step has not happened yet.
     if (_stepRate == 0) {
       _updateAxis(dx, dy);
+      _direction = _updateDirection(dx, dy);
     }
 
-    final lastDirection = _direction;
-    _updateDirection(dx, dy);
+    if (_direction != _updateDirection(dx, dy)) {
+      // Reset progress for the next event.
+      _stepReady = true;
+      return;
+    }
 
-    final directionChanged = lastDirection != _direction;
+    // This will result in a slow glide right followed by a fast left resulting in
+    // slow travel right then fast travel RIGHT
+    // TODO: I need to get rid of any distances that are the wrong direction
 
     final threshold = _stepRate == 0
       ? sensitivity.firstStepTravel
@@ -218,7 +224,6 @@ class SiriRemoteGlide {
 
     // Not enough movement for a step -- accumulate more.
     if (dist < threshold) {
-      _direction = lastDirection;
       return;
     }
 
@@ -228,26 +233,17 @@ class SiriRemoteGlide {
       ? 1 + (dist - sensitivity.firstStepTravel) / sensitivity.stepTravel
       : dist / sensitivity.stepTravel;
 
-    // TODO: there is a problem with changing direction.
-    final currStepRate = !directionChanged
+    final currStepRate = _stepRate == 0
       ? _smoothing * (steps / dt) + (1.0 - _smoothing) * _stepRate
       : (steps / dt);
 
     // Reject stepRates that are too small.
     if (currStepRate <= _minStepRate) {
-      _direction = lastDirection;
       return;
     }
 
-    if (directionChanged) {
-        log.playback(
-            'stepRate=${_stepRate.toStringAsFixed(3)} '
-            'new stepRate=${currStepRate.toStringAsFixed(3)} '
-        );
-    }
-
-    // Change stepRate if it is larger OR changed direction.
-    if (currStepRate > _stepRate || directionChanged) {
+    // Change stepRate if it is larger
+    if (currStepRate > _stepRate) {
       _stepRate = currStepRate;
       _stopStepTimer();
     }
@@ -265,12 +261,12 @@ class SiriRemoteGlide {
   // Direction
   // ---------------------------------------------------------------------------
 
-  void _updateDirection(double dx, double dy) {
+  GamepadNavKey _updateDirection(double dx, double dy) {
     final horizontal = _axis == _Axis.horizontal;
 
     final travel = horizontal ? dx : dy;
 
-    _direction = horizontal
+    return horizontal
         ? (travel > 0
             ? GamepadNavKey.right
             : GamepadNavKey.left)
