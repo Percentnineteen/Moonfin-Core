@@ -81,13 +81,13 @@ class SiriRemoteGlide {
   // ---------------------------------------------------------------------------
 
   // Polling rate
-  static const Duration _pollingRate = Duration(milliseconds:100);
+  static const Duration _pollingRate = Duration(milliseconds:50);
 
   // Minimum step interval; min time between steps
   static const Duration _minStepInterval = Duration(milliseconds:50);
 
   // Maximum step interval; max time between steps
-  static const Duration _maxStepInterval = Duration(seconds:1);
+  static const Duration _maxStepInterval = Duration(milliseconds:500);
 
   // Gesture duration before a flick becomes a glide.
   static const Duration _holdThreshold = Duration(milliseconds: 500);
@@ -96,7 +96,7 @@ class SiriRemoteGlide {
   static const double _maxVelocity = 25.0;
 
   // Minimum velocity -- values below this will be ignored
-  static const double _minVelocity = 2.0;
+  static const double _minVelocity = 1.0;
 
 
 
@@ -126,6 +126,14 @@ class SiriRemoteGlide {
   @visibleForTesting
   void debugReset() {
     _synthesizer.releaseAll();
+
+    _resetState();
+  }
+
+  @visibleForTesting
+  void debugHandleTouch(TvRemoteTouchEvent event) => _onTouch(event);
+
+  void _resetState() {
     _stopPollTimer();
     _stopStepTimer();
     _stopHeldTimer();
@@ -142,9 +150,6 @@ class SiriRemoteGlide {
         ..stop()
         ..reset();
   }
-
-  @visibleForTesting
-  void debugHandleTouch(TvRemoteTouchEvent event) => _onTouch(event);
 
   // ---------------------------------------------------------------------------
   // Touch handling
@@ -174,23 +179,13 @@ class SiriRemoteGlide {
   }
 
   void _beginGesture(double x, double y) {
-    // Stop timers.
-    _stopPollTimer();
-    _stopHeldTimer();
+    _resetState();
 
-    // Set initial gesture conditions.
+    // TODO: consider if I should modify reset_state to handle this better
     _touching = true;
-    _held = false;
-    _isVertical = null;
-    _stepTicks = null;
-    _tickCount = 0;
-
-    _direction = null;
- 
-    // Start timing the gesture.
     _stopWatch
-      ..reset()
-      ..start();
+        ..reset()
+        ..start();
 
     _velocityTracker = VelocityTracker.withKind(PointerDeviceKind.trackpad);
     _velocityTracker.addPosition(_stopWatch.elapsed, Offset(x, y));
@@ -215,10 +210,16 @@ class SiriRemoteGlide {
   // Direction
   // ---------------------------------------------------------------------------
 
-  void _updateDirection(double dx, double dy) {
+  void _updateDirection(int? ticks) {
+    if (ticks == null) return;
+    _direction = _isVertical == true
+        ? (ticks > 0
+              ? GamepadNavKey.down
+              : GamepadNavKey.up)
+        : (ticks > 0
+              ? GamepadNavKey.right
+              : GamepadNavKey.left);
   }
-
-
 
   // ---------------------------------------------------------------------------
   // Gesture ending
@@ -229,20 +230,14 @@ class SiriRemoteGlide {
       return;
     }
 
-    _touching = false;
-    _held = false;
-    _isVertical = null;
-    _stepTicks = null;
-    _tickCount = 0;
-
-    _direction = null;
-
-    _stopHeldTimer();
-    _stopStepTimer();
-    _stopPollTimer();
-    _stopWatch
-        ..stop()
-        ..reset();
+    // TODO: remember to keep the stepTimer going if there is a decay
+    //    _held
+    //    _isVertical
+    //    _stepTicks
+    //    _tickCount
+    //    _direction
+    //    _stopTimer
+    _resetState();
   }
 
   // ---------------------------------------------------------------------------
@@ -287,10 +282,13 @@ class SiriRemoteGlide {
               ticks.abs() < previousTicks.abs()
           ) {
             _stepTicks = ticks;
-            log.playback(
-              'ticks/step = $_stepTicks}\n'
-              'isVertical/s = $_isVertical}\n'
-            );
+            _updateDirection(_stepTicks);
+            if (_stepTimer == null) _startStepTimer();
+            // log.playback(
+            //     'ticks/step = $_stepTicks\n'
+            //     'isVertical/s = $_isVertical\n'
+            //     'direction = ${_direction?.name}'
+            //     );
           }
         },
     );
@@ -306,12 +304,14 @@ class SiriRemoteGlide {
       return;
     }
     _stepTimer = Timer.periodic(_minStepInterval, (_) {
+      // log.playback(
+      //     'STEP TIMER: ticks=$_tickCount stepTicks=$_stepTicks '
+      //     'touching=$_touching direction=${_direction?.name}',
+      //     );
       final stepTicks = _stepTicks;
       if (stepTicks == null) return;
-      if (_tickCount >= stepTicks) {
-        // TODO: step and reset
-        _tickCount = 0;
-      }
+      if (_tickCount >= stepTicks.abs()) _tickCount = 0;
+      if (_tickCount == 0) _step(_direction!);
       _tickCount++;
     });
   }
@@ -351,4 +351,8 @@ class SiriRemoteGlide {
     return v.isNegative ? -stepTicks : stepTicks;
   }
 
+  void _step(GamepadNavKey direction) {
+    _synthesizer.press(direction);
+    _synthesizer.release(direction);
+  }
 }
