@@ -50,7 +50,7 @@ class SiriRemoteGlide {
   bool _held = false;
   bool? _isVertical = null;
 
-  double? _peakVelocity = null;
+  int? _stepTicks = null;
   // Observed velocity is +/- 30 out of VelocityTracker
   // Need to normalize it to a min/max
   // +/- 0.5 -- treat as dead
@@ -65,10 +65,12 @@ class SiriRemoteGlide {
       4. ** Could decouple pollingRate with a stepRate timer for finer granularity **
       5. peakVelocity could be named something else and be the number of ticks of the clock before firing a new step
   */
+  int _tickCount = 0;
 
   GamepadNavKey? _direction;
 
   Timer? _pollTimer;
+  Timer? _stepTimer;
   Timer? _heldTimer;
 
   final Stopwatch _stopWatch = Stopwatch();
@@ -78,23 +80,37 @@ class SiriRemoteGlide {
   // Gesture tuning
   // ---------------------------------------------------------------------------
 
-  // Polling rate; minimum step interval
+  // Polling rate
   static const Duration _pollingRate = Duration(milliseconds:100);
 
-  // Rate at which velocity of a flick decays.
-  static const double _momentumDecay = 1.0;
+  // Minimum step interval; min time between steps
+  static const Duration _minStepInterval = Duration(milliseconds:50);
 
-  // Rate below which a gesture is ignored. (step/second)
-  static const double _minStepRate = 1.0;
-
-  // Rate below which a flick is considered stopped. (step/second)
-  static const double _minFlickStepRate = 5.0;
+  // Maximum step interval; max time between steps
+  static const Duration _maxStepInterval = Duration(seconds:1);
 
   // Gesture duration before a flick becomes a glide.
   static const Duration _holdThreshold = Duration(milliseconds: 500);
 
-  // Velocity smoothing factor
-  static const double _smoothing = 0.20;
+  // Maximum velocity -- values above this will clamp to this value
+  static const double _maxVelocity = 25.0;
+
+  // Minimum velocity -- values below this will be ignored
+  static const double _minVelocity = 2.0;
+
+
+
+  //  // Rate at which velocity of a flick decays.
+  //  static const double _momentumDecay = 1.0;
+
+  //  // Rate below which a gesture is ignored. (step/second)
+  //  static const double _minStepRate = 1.0;
+
+  //  // Rate below which a flick is considered stopped. (step/second)
+  //  static const double _minFlickStepRate = 5.0;
+
+  //  // Velocity smoothing factor
+  //  static const double _smoothing = 0.20;
 
   // ---------------------------------------------------------------------------
   // Public API
@@ -111,13 +127,16 @@ class SiriRemoteGlide {
   void debugReset() {
     _synthesizer.releaseAll();
     _stopPollTimer();
+    _stopStepTimer();
     _stopHeldTimer();
 
     _touching = false;
     _held = false;
     _isVertical = null;
+    _stepTicks = null;
+    _tickCount = 0;
+
     _direction = null;
-    _peakVelocity = null;
 
     _stopWatch
         ..stop()
@@ -163,8 +182,10 @@ class SiriRemoteGlide {
     _touching = true;
     _held = false;
     _isVertical = null;
+    _stepTicks = null;
+    _tickCount = 0;
+
     _direction = null;
-    _peakVelocity = null;
  
     // Start timing the gesture.
     _stopWatch
@@ -186,8 +207,8 @@ class SiriRemoteGlide {
   // Axis locking
   // ---------------------------------------------------------------------------
 
-  void _updateAxis(double x, double y) {
-    _isVertical = y.abs() > x.abs() ? true : false;
+  void _setAxis(double vx, double vy) {
+    _isVertical = vy.abs() > vx.abs() ? true : false;
   }
 
   // ---------------------------------------------------------------------------
@@ -197,9 +218,41 @@ class SiriRemoteGlide {
   void _updateDirection(double dx, double dy) {
   }
 
+
+
   // ---------------------------------------------------------------------------
-  // Navigation steps
+  // Gesture ending
   // ---------------------------------------------------------------------------
+
+  void _endGesture() {
+    if (!_touching) {
+      return;
+    }
+
+    _touching = false;
+    _held = false;
+    _isVertical = null;
+    _stepTicks = null;
+    _tickCount = 0;
+
+    _direction = null;
+
+    _stopHeldTimer();
+    _stopStepTimer();
+    _stopPollTimer();
+    _stopWatch
+        ..stop()
+        ..reset();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Timer
+  // ---------------------------------------------------------------------------
+
+  void _stopPollTimer() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+  }
 
   void _startPollTimer() {
     if (_pollTimer != null) {
@@ -215,47 +268,52 @@ class SiriRemoteGlide {
           final vx = velocity.pixelsPerSecond.dx;
           final vy = velocity.pixelsPerSecond.dy;
           final confidence = velocity.confidence;
-          final duration = velocity.duration;
+          //final duration = velocity.duration;
 
-          log.playback(
-            'vx is ${vx.toStringAsFixed(3)}\n'
-            'vy is ${vy.toStringAsFixed(3)}\n'
-            'confidence is ${confidence.toStringAsFixed(3)}\n'
-            'duration is ${duration.inMilliseconds}ms\n'
-          );
+          if (confidence < 0.75) return;
+
+          if (_isVertical == null) _setAxis(vx, vy);
+          final ticks = _isVertical == true
+              ? mapVelocity(vy)
+              : mapVelocity(vx);
+
+          if (ticks == 0) {
+            if (_stepTicks == null) _isVertical = null;
+            return;
+          }
+          final previousTicks = _stepTicks;
+          if (previousTicks == null ||
+              ticks.isNegative != previousTicks.isNegative ||
+              ticks.abs() < previousTicks.abs()
+          ) {
+            _stepTicks = ticks;
+            log.playback(
+              'ticks/step = $_stepTicks}\n'
+              'isVertical/s = $_isVertical}\n'
+            );
+          }
         },
     );
   }
 
-
-  // ---------------------------------------------------------------------------
-  // Gesture ending
-  // ---------------------------------------------------------------------------
-
-  void _endGesture() {
-    if (!_touching) {
-      return;
-    }
-
-    _touching = false;
-    _held = false;
-    _isVertical = null;
-    _direction = null;
-
-    _stopHeldTimer();
-    _stopPollTimer();
-    _stopWatch
-        ..stop()
-        ..reset();
+  void _stopStepTimer() {
+    _stepTimer?.cancel();
+    _stepTimer = null;
   }
 
-  // ---------------------------------------------------------------------------
-  // Timer
-  // ---------------------------------------------------------------------------
-
-  void _stopPollTimer() {
-    _pollTimer?.cancel();
-    _pollTimer = null;
+  void _startStepTimer() {
+    if (_stepTimer != null) {
+      return;
+    }
+    _stepTimer = Timer.periodic(_minStepInterval, (_) {
+      final stepTicks = _stepTicks;
+      if (stepTicks == null) return;
+      if (_tickCount >= stepTicks) {
+        // TODO: step and reset
+        _tickCount = 0;
+      }
+      _tickCount++;
+    });
   }
 
   void _stopHeldTimer() {
@@ -274,28 +332,23 @@ class SiriRemoteGlide {
     });
   }
 
-  double mapVelocity(
-      double velocity, {
-      required double minVelocity,
-      required double maxVelocity,
-      required double minStepRate,
-      required double maxStepRate,
-      }) {
-    final v = velocity.clamp(-maxVelocity, maxVelocity);
+  int mapVelocity(double velocity) {
+    final v = velocity.clamp(-_maxVelocity, _maxVelocity);
 
-    if (v.abs() < minVelocity) {
+    if (v.abs() < _minVelocity) {
       return 0;
     }
 
     final magnitude = v.abs();
 
-    final t = (magnitude - minVelocity) /
-      (maxVelocity - minVelocity);
+    final t = (magnitude - _minVelocity) /
+      (_maxVelocity - _minVelocity);
 
-    final stepRate = minStepRate +
-      t * (maxStepRate - minStepRate);
+    final stepIntervalTicks = _maxStepInterval.inMilliseconds +
+      (t * (_minStepInterval.inMilliseconds - _maxStepInterval.inMilliseconds)).round();
 
-    return v.isNegative ? -stepRate : stepRate;
+    final stepTicks = (stepIntervalTicks / _minStepInterval.inMilliseconds).round();
+    return v.isNegative ? -stepTicks : stepTicks;
   }
 
 }
