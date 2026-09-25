@@ -38,13 +38,23 @@ class SiriRemoteGlide {
 
   bool _attached = false;
 
-// TODO: Make sure all globals are reset properly
   bool _touching = false;
+
+  final Stopwatch _stopWatch = Stopwatch();
+  int? _lastStepTime = null;
+  int? _stepTicks = null;
+  int _stepCounter = 0;
+  GamepadNavKey? _lastDirection = null;
+  Timer? _stepTimer;
+
   double _lastX = 0;
   double _lastY = 0;
   double _accX = 0;
   double _accY = 0;
   bool _steppedThisGesture = false;
+
+  // Minimum step interval; min time between steps
+  static const Duration _minStepInterval = Duration(milliseconds:50);
 
   void attach() {
     if (_attached) return;
@@ -82,12 +92,36 @@ class SiriRemoteGlide {
   }
 
   void _beginGesture(double x, double y) {
+    log.playback('gesture start');
     _touching = true;
     _lastX = x;
     _lastY = y;
     _accX = 0;
     _accY = 0;
     _steppedThisGesture = false;
+    // TODO: review resetting state
+    _lastStepTime = null;
+    _stepTicks = null;
+    _stopStepTimer();
+    _stepCounter = 0;
+    _stopWatch
+      ..reset()
+      ..start();
+  }
+
+  void _endGesture() {
+    if (!_touching) {
+      return;
+    }
+    log.playback('gesture end');
+    // TODO: review resetting state
+    // TODO: this only applies for non-flick gestures
+    _stopStepTimer;
+    _touching = false;
+    _lastStepTime = null;
+    _stopWatch
+      ..stop()
+      ..reset();
   }
 
   void _onMove(double x, double y) {
@@ -102,18 +136,18 @@ class SiriRemoteGlide {
     _accY = dy.sign != 0 && dy.sign != _accY.sign ? dy : _accY + dy;
 
     final threshold = _steppedThisGesture
-        ? sensitivity.stepTravel
-        : sensitivity.firstStepTravel;
+      ? sensitivity.stepTravel
+      : sensitivity.firstStepTravel;
     final horizontal = _accX.abs() >= _accY.abs();
     final travel = horizontal ? _accX : _accY;
     if (travel.abs() < threshold) return;
 
     final direction = horizontal
-        ? (travel > 0 ? GamepadNavKey.right : GamepadNavKey.left)
-        // The pad reports up as negative y, so travelling positive is a
-        // finger moving down the surface.
-        : (travel > 0 ? GamepadNavKey.down : GamepadNavKey.up);
-    _step(direction);
+      ? (travel > 0 ? GamepadNavKey.right : GamepadNavKey.left)
+      // The pad reports up as negative y, so travelling positive is a
+      // finger moving down the surface.
+      : (travel > 0 ? GamepadNavKey.down : GamepadNavKey.up);
+    _stepWrapper(direction);
     _steppedThisGesture = true;
     if (horizontal) {
       _accX -= travel.sign * threshold;
@@ -121,15 +155,66 @@ class SiriRemoteGlide {
     } else {
       _accY -= travel.sign * threshold;
       _accX = 0;
-          }
-        }
+    }
+  }
 
-  void _endGesture() {
-    if (!_touching) {
+  void _stepWrapper(GamepadNavKey direction) {
+    final lastStepTime = _lastStepTime;
+    final stepTicks = _stepTicks;
+
+    if (_steppedThisGesture) {
+      final ticks = ((_stopWatch.elapsedMilliseconds - (lastStepTime ?? 0)) / _minStepInterval.inMilliseconds).round();
+      if (stepTicks == null || stepTicks > ticks || direction != _lastDirection) {
+        _stepTicks = ticks;
+        log.playback(
+            'step interval = ${ticks.toStringAsFixed(3)}\n'
+            'last steptime = ${lastStepTime?.toStringAsFixed(3)}\n'
+            'stopwatch = ${_stopWatch.elapsedMilliseconds}\n'
+            'interval = ${_minStepInterval.inMilliseconds}\n'
+            'ticks = (stopwatch - lastStepTime) / interval'
+            );
+      } else {
+        log.playback(
+            'step interval = ${stepTicks.toStringAsFixed(3)}\n'
+            'last steptime = ${lastStepTime?.toStringAsFixed(3)}\n'
+            'stopwatch = ${_stopWatch.elapsedMilliseconds}\n'
+            'interval = ${_minStepInterval.inMilliseconds}\n'
+            'ticks = (stopwatch - lastStepTime) / interval'
+            );
+      }
+      // _startStepTimer();
+    } else {
+      log.playback('first');
+    }
+    _lastStepTime = _stopWatch.elapsedMilliseconds;
+    log.playback('STEP ${direction.name}');
+    _lastDirection = direction;
+    _step(direction);
+  }
+
+  void _startStepTimer() {
+    if (_stepTimer != null) {
       return;
     }
-    _touching = false;
-    }
+    final stepTicks = _stepTicks;
+    _stepTimer = Timer.periodic(_minStepInterval, (_) {
+      // determine if step should fire
+      if (stepTicks != null && _stepCounter >= stepTicks) {
+        final direction = _lastDirection;
+        if (direction != null) {
+          _step(direction);
+          _stepCounter = 0;
+          log.playback('STEP ${direction.name}');
+        }
+      }
+      _stepCounter +=1;
+    });
+  }
+
+  void _stopStepTimer() {
+    _stepTimer?.cancel();
+    _stepTimer = null;
+  }
 
   void _step(GamepadNavKey direction) {
     _synthesizer.press(direction);
