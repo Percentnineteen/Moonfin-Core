@@ -160,9 +160,9 @@ class SiriRemoteGlide {
     final lastStepTime = _lastStepTime;
     final stepTicks = _stepTicks;
 
-    if (_steppedThisGesture) {
+    if (_steppedThisGesture && direction == _lastDirection) {
       final ticks = ((_stopWatch.elapsedMilliseconds - (lastStepTime ?? 0)) / _minStepInterval.inMilliseconds).round();
-      if (stepTicks == null || stepTicks > ticks || direction != _lastDirection) {
+      if (stepTicks == null || stepTicks > ticks) {
         _stepTicks = ticks;
         log.playback(
             'step interval = ${ticks.toStringAsFixed(3)}\n'
@@ -185,6 +185,7 @@ class SiriRemoteGlide {
       log.playback('first' 
           'STEP ${direction.name}'
           );
+      _stopStepTimer();
       _step(direction);
     }
     _lastStepTime = _stopWatch.elapsedMilliseconds;
@@ -195,12 +196,12 @@ class SiriRemoteGlide {
     if (_stepTimer != null) {
       return;
     }
-    if (!_touching) {
-      _stopStepTimer();
-    }
     final stepTicks = _stepTicks;
     _stepTimer = Timer.periodic(_minStepInterval, (_) {
-      // determine if step should fire
+      // TODO: modify for flick
+      if (!_touching) {
+        _stopStepTimer();
+      }
       if (stepTicks != null && _stepCounter >= stepTicks) {
         final direction = _lastDirection;
         if (direction != null) {
@@ -216,6 +217,7 @@ class SiriRemoteGlide {
   void _stopStepTimer() {
     _stepTimer?.cancel();
     _stepTimer = null;
+    _stepTicks = null;
   }
 
   void _step(GamepadNavKey direction) {
