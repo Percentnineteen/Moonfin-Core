@@ -39,13 +39,16 @@ class SiriRemoteGlide {
   bool _attached = false;
 
   bool _touching = false;
+  bool _flicked = false;
 
   final Stopwatch _stopWatch = Stopwatch();
   int? _lastStepTime = null;
   int? _stepTicks = null;
+  double? _decayedStepTicks = null;
   int _stepCounter = 0;
   GamepadNavKey? _lastDirection = null;
   Timer? _stepTimer;
+  Timer? _flickTimer;
 
   double _lastX = 0;
   double _lastY = 0;
@@ -55,6 +58,15 @@ class SiriRemoteGlide {
 
   // Minimum step interval; min time between steps
   static const Duration _minStepInterval = Duration(milliseconds:50);
+
+  // Flick decay rate (k in V = V0 * exp (-k * t))
+  static const double _decayConstant = 3.5;
+
+  // Interval at which a flick stops
+  static const Duration _flickStopInterval = Duration(milliseconds:350);
+
+  // Flick timer
+  static const Duration _flickThreshold = Duration(milliseconds:350);
 
   void attach() {
     if (_attached) return;
@@ -92,7 +104,6 @@ class SiriRemoteGlide {
   }
 
   void _beginGesture(double x, double y) {
-    log.playback('gesture start');
     _touching = true;
     _lastX = x;
     _lastY = y;
@@ -102,18 +113,22 @@ class SiriRemoteGlide {
     // TODO: review resetting state
     _lastStepTime = null;
     _stepTicks = null;
+    _decayedStepTicks = null;
     _stopStepTimer();
+    _stopFlickTimer();
     _stepCounter = 0;
     _stopWatch
       ..reset()
       ..start();
+    // Every gesture starts as a flick until it times out
+    _flicked = true;
+    _startFlickTimer();
   }
 
   void _endGesture() {
     if (!_touching) {
       return;
     }
-    log.playback('gesture end');
     // TODO: review resetting state
     _touching = false;
     _lastStepTime = null;
@@ -160,31 +175,14 @@ class SiriRemoteGlide {
     final lastStepTime = _lastStepTime;
     final stepTicks = _stepTicks;
 
+    final time = _stopWatch.elapsedMilliseconds;
     if (_steppedThisGesture && direction == _lastDirection) {
-      final ticks = ((_stopWatch.elapsedMilliseconds - (lastStepTime ?? 0)) / _minStepInterval.inMilliseconds).round();
+      final ticks = math.max(1, ((_stopWatch.elapsedMilliseconds - (lastStepTime ?? 0)) / _minStepInterval.inMilliseconds).round());
       if (stepTicks == null || stepTicks > ticks) {
         _stepTicks = ticks;
-        log.playback(
-            'step interval = ${ticks.toStringAsFixed(3)}\n'
-            'last steptime = ${lastStepTime?.toStringAsFixed(3)}\n'
-            'stopwatch = ${_stopWatch.elapsedMilliseconds}\n'
-            'interval = ${_minStepInterval.inMilliseconds}\n'
-            'ticks = (stopwatch - lastStepTime) / interval'
-            );
-      } else {
-        log.playback(
-            'step interval = ${stepTicks.toStringAsFixed(3)}\n'
-            'last steptime = ${lastStepTime?.toStringAsFixed(3)}\n'
-            'stopwatch = ${_stopWatch.elapsedMilliseconds}\n'
-            'interval = ${_minStepInterval.inMilliseconds}\n'
-            'ticks = (stopwatch - lastStepTime) / interval'
-            );
       }
       _startStepTimer();
     } else {
-      log.playback('first' 
-          'STEP ${direction.name}'
-          );
       _stopStepTimer();
       _step(direction);
     }
@@ -196,21 +194,40 @@ class SiriRemoteGlide {
     if (_stepTimer != null) {
       return;
     }
-    final stepTicks = _stepTicks;
+    // TODO: this logic needs a cleanup
     _stepTimer = Timer.periodic(_minStepInterval, (_) {
-      // TODO: modify for flick
-      if (!_touching) {
+      final stepTicks = _stepTicks;
+      if (!_touching && !_flicked) {
         _stopStepTimer();
+        return;
       }
       if (stepTicks != null && _stepCounter >= stepTicks) {
         final direction = _lastDirection;
         if (direction != null) {
           _step(direction);
           _stepCounter = 0;
-          log.playback('STEP ${direction.name}');
+          if (!_touching && _flicked) {
+            var decayedStepTicks = _decayedStepTicks ?? stepTicks.toDouble();
+            decayedStepTicks *= math.exp(_decayConstant * stepTicks * _minStepInterval.inMilliseconds / 1000.0);
+            if ((decayedStepTicks * _minStepInterval.inMilliseconds) >= _flickStopInterval.inMilliseconds) {
+              // The flick has stopped
+              _flicked = false;
+            } else {
+              _decayedStepTicks = decayedStepTicks;
+              _stepTicks = decayedStepTicks.round();
+            }
+          }
         }
       }
       _stepCounter +=1;
+    });
+  }
+
+  void _startFlickTimer() {
+    _flickTimer = Timer(_flickThreshold, () {
+      if (_touching) {
+        _flicked = false;
+      }
     });
   }
 
@@ -220,8 +237,20 @@ class SiriRemoteGlide {
     _stepTicks = null;
   }
 
+  void _stopFlickTimer() {
+    _flickTimer?.cancel();
+    _flickTimer = null;
+  }
+
   void _step(GamepadNavKey direction) {
     _synthesizer.press(direction);
     _synthesizer.release(direction);
   }
+}
+
+// TODO: change to state-based (IDLE, TOUCH, DECAY)
+enum _state {
+  idle,
+  touching,
+  decaying,
 }
