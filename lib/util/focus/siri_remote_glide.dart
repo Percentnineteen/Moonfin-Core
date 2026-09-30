@@ -38,8 +38,7 @@ class SiriRemoteGlide {
 
   bool _attached = false;
 
-  bool _touching = false;
-  bool _flicked = false;
+  _State _state = _State.idle;
 
   final Stopwatch _stopWatch = Stopwatch();
   int? _lastStepTime = null;
@@ -48,7 +47,6 @@ class SiriRemoteGlide {
   int _stepCounter = 0;
   GamepadNavKey? _lastDirection = null;
   Timer? _stepTimer;
-  Timer? _flickTimer;
 
   double _lastX = 0;
   double _lastY = 0;
@@ -77,7 +75,7 @@ class SiriRemoteGlide {
   @visibleForTesting
   void debugReset() {
     _synthesizer.releaseAll();
-    _touching = false;
+    _state = _State.idle;
   }
 
   @visibleForTesting
@@ -88,7 +86,7 @@ class SiriRemoteGlide {
       case TvRemoteTouchPhase.started:
         _beginGesture(event.x, event.y);
       case TvRemoteTouchPhase.move:
-        if (!_touching) {
+        if (_state == _State.idle) {
           _beginGesture(event.x, event.y);
           return;
         }
@@ -104,7 +102,7 @@ class SiriRemoteGlide {
   }
 
   void _beginGesture(double x, double y) {
-    _touching = true;
+    _state = _State.touching;
     _lastX = x;
     _lastY = y;
     _accX = 0;
@@ -115,22 +113,22 @@ class SiriRemoteGlide {
     _stepTicks = null;
     _decayedStepTicks = null;
     _stopStepTimer();
-    _stopFlickTimer();
     _stepCounter = 0;
     _stopWatch
       ..reset()
       ..start();
-    // Every gesture starts as a flick until it times out
-    _flicked = true;
-    _startFlickTimer();
   }
 
   void _endGesture() {
-    if (!_touching) {
+    if (_state != _State.touching) {
       return;
     }
     // TODO: review resetting state
-    _touching = false;
+    if (_stopWatch.elapsedMilliseconds >= _flickThreshold.inMilliseconds) {
+      _state = _State.idle;
+    } else {
+      _state = _State.decaying;
+    }
     _lastStepTime = null;
     _stopWatch
       ..stop()
@@ -197,7 +195,7 @@ class SiriRemoteGlide {
     // TODO: this logic needs a cleanup
     _stepTimer = Timer.periodic(_minStepInterval, (_) {
       final stepTicks = _stepTicks;
-      if (!_touching && !_flicked) {
+      if (_state == _State.idle) {
         _stopStepTimer();
         return;
       }
@@ -205,13 +203,13 @@ class SiriRemoteGlide {
         final direction = _lastDirection;
         if (direction != null) {
           _step(direction);
-          _stepCounter = 0;
-          if (!_touching && _flicked) {
+          _stepCounter = 1;
+          if (_state == _State.decaying) {
             var decayedStepTicks = _decayedStepTicks ?? stepTicks.toDouble();
             decayedStepTicks *= math.exp(_decayConstant * stepTicks * _minStepInterval.inMilliseconds / 1000.0);
             if ((decayedStepTicks * _minStepInterval.inMilliseconds) >= _flickStopInterval.inMilliseconds) {
               // The flick has stopped
-              _flicked = false;
+              _state = _State.idle;
             } else {
               _decayedStepTicks = decayedStepTicks;
               _stepTicks = decayedStepTicks.round();
@@ -223,25 +221,11 @@ class SiriRemoteGlide {
     });
   }
 
-  void _startFlickTimer() {
-    _flickTimer = Timer(_flickThreshold, () {
-      if (_touching) {
-        _flicked = false;
-      }
-    });
-  }
-
   void _stopStepTimer() {
     _stepTimer?.cancel();
     _stepTimer = null;
     _stepTicks = null;
   }
-
-  void _stopFlickTimer() {
-    _flickTimer?.cancel();
-    _flickTimer = null;
-  }
-
   void _step(GamepadNavKey direction) {
     _synthesizer.press(direction);
     _synthesizer.release(direction);
@@ -249,7 +233,7 @@ class SiriRemoteGlide {
 }
 
 // TODO: change to state-based (IDLE, TOUCH, DECAY)
-enum _state {
+enum _State {
   idle,
   touching,
   decaying,
