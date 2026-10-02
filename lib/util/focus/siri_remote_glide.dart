@@ -167,56 +167,86 @@ class SiriRemoteGlide {
   }
 
   void _stepWrapper(GamepadNavKey direction) {
-    final lastStepTime = _lastStepTime;
-    final stepTicks = _stepTicks;
+    final now = _stopWatch.elapsedMilliseconds;
+    final lastDirection = _lastDirection;
 
-    final time = _stopWatch.elapsedMilliseconds;
-    if (_lastDirection != null && direction == _lastDirection) {
-      final ticks = math.max(1, ((_stopWatch.elapsedMilliseconds - (lastStepTime ?? 0)) / _minStepInterval.inMilliseconds).round());
-      if (stepTicks == null || stepTicks > ticks) {
-        _stepTicks = ticks;
-      }
-      _startStepTimer();
-    } else {
+    if (lastDirection == null || direction != lastDirection) {
       _stopStepTimer();
       _step(direction);
+    } else {
+      _updateStepCadence(now);
+      _startStepTimer();
     }
-    _lastStepTime = _stopWatch.elapsedMilliseconds;
+
+    _lastStepTime = now;
     _lastDirection = direction;
+  }
+
+  void _updateStepCadence(int now) {
+    final lastStepTime = _lastStepTime;
+    if (lastStepTime == null) {
+      return;
+    }
+
+    final ticks = math.max(1, ((now - lastStepTime) / _minStepInterval.inMilliseconds).round());
+
+    final currentTicks = _stepTicks;
+    if (currentTicks == null || ticks < currentTicks) {
+      _stepTicks = ticks;
+    }
   }
 
   void _startStepTimer() {
     if (_stepTimer != null) {
       return;
     }
-    // TODO: this logic needs a cleanup
+
     _stepTimer = Timer.periodic(_minStepInterval, (_) {
-      final stepTicks = _stepTicks;
-      if (_state == _State.idle) {
-        _stopStepTimer();
-        return;
-      }
-      if (stepTicks != null && _stepCounter >= stepTicks) {
-        final direction = _lastDirection;
-        if (direction != null) {
-          _step(direction);
-          // Trying this out to see if it helps with the feeling of the first repeat stutter
-          _stepCounter = 1;
-          if (_state == _State.decaying) {
-            var decayedStepTicks = _decayedStepTicks ?? stepTicks.toDouble();
-            decayedStepTicks *= math.exp(_decayConstant * stepTicks * _minStepInterval.inMilliseconds / 1000.0);
-            if ((decayedStepTicks * _minStepInterval.inMilliseconds) >= _flickStopInterval.inMilliseconds) {
-              // The flick has stopped
-              _state = _State.idle;
-            } else {
-              _decayedStepTicks = decayedStepTicks;
-              _stepTicks = decayedStepTicks.round();
-            }
-          }
-        }
-      }
-      _stepCounter +=1;
-    });
+        _onStepTimerTick();
+        });
+  }
+
+  void _onStepTimerTick() {
+    if (_state == _State.idle) {
+      _stopStepTimer();
+      return;
+    }
+
+    final stepTicks = _stepTicks;
+    _stepCounter++;
+    if (stepTicks == null || _stepCounter < stepTicks) {
+      _stepCounter++;
+      return;
+    }
+
+    final direction = _lastDirection;
+    if (direction == null) {
+      _stopStepTimer();
+      return;
+    }
+
+    _step(direction);
+    _stepCounter = 0;
+
+    if (_state == _State.decaying) {
+      _updateDecay(stepTicks);
+    }
+  }
+
+  void _updateDecay(int stepTicks) {
+    var decayedStepTicks = _decayedStepTicks ?? stepTicks.toDouble();
+
+    decayedStepTicks *= math.exp(
+        _decayConstant * stepTicks * _minStepInterval.inMilliseconds / 1000.0,
+        );
+
+    if (decayedStepTicks * _minStepInterval.inMilliseconds >=
+        _flickStopInterval.inMilliseconds) {
+      _state = _State.idle;
+    } else {
+      _decayedStepTicks = decayedStepTicks;
+      _stepTicks = decayedStepTicks.round();
+    }
   }
 
   void _stopStepTimer() {
@@ -224,13 +254,13 @@ class SiriRemoteGlide {
     _stepTimer = null;
     _stepTicks = null;
   }
+
   void _step(GamepadNavKey direction) {
     _synthesizer.press(direction);
     _synthesizer.release(direction);
   }
 }
 
-// TODO: change to state-based (IDLE, TOUCH, DECAY)
 enum _State {
   idle,
   touching,
