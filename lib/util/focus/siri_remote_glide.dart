@@ -52,7 +52,6 @@ class SiriRemoteGlide {
   double _lastY = 0;
   double _accX = 0;
   double _accY = 0;
-  bool _steppedThisGesture = false;
 
   // Minimum step interval; min time between steps
   static const Duration _minStepInterval = Duration(milliseconds:50);
@@ -107,7 +106,6 @@ class SiriRemoteGlide {
     _lastY = y;
     _accX = 0;
     _accY = 0;
-    _steppedThisGesture = false;
     // TODO: review resetting state
     _lastStepTime = null;
     _stepTicks = null;
@@ -146,9 +144,9 @@ class SiriRemoteGlide {
     _accX = dx.sign != 0 && dx.sign != _accX.sign ? dx : _accX + dx;
     _accY = dy.sign != 0 && dy.sign != _accY.sign ? dy : _accY + dy;
 
-    final threshold = _steppedThisGesture
-      ? sensitivity.stepTravel
-      : sensitivity.firstStepTravel;
+    final threshold = _lastDirection == null
+      ? sensitivity.firstStepTravel
+      : sensitivity.stepTravel;
     final horizontal = _accX.abs() >= _accY.abs();
     final travel = horizontal ? _accX : _accY;
     if (travel.abs() < threshold) return;
@@ -159,7 +157,6 @@ class SiriRemoteGlide {
       // finger moving down the surface.
       : (travel > 0 ? GamepadNavKey.down : GamepadNavKey.up);
     _stepWrapper(direction);
-    _steppedThisGesture = true;
     if (horizontal) {
       _accX -= travel.sign * threshold;
       _accY = 0;
@@ -174,7 +171,7 @@ class SiriRemoteGlide {
     final stepTicks = _stepTicks;
 
     final time = _stopWatch.elapsedMilliseconds;
-    if (_steppedThisGesture && direction == _lastDirection) {
+    if (_lastDirection != null && direction == _lastDirection) {
       final ticks = math.max(1, ((_stopWatch.elapsedMilliseconds - (lastStepTime ?? 0)) / _minStepInterval.inMilliseconds).round());
       if (stepTicks == null || stepTicks > ticks) {
         _stepTicks = ticks;
@@ -203,6 +200,7 @@ class SiriRemoteGlide {
         final direction = _lastDirection;
         if (direction != null) {
           _step(direction);
+          // Trying this out to see if it helps with the feeling of the first repeat stutter
           _stepCounter = 1;
           if (_state == _State.decaying) {
             var decayedStepTicks = _decayedStepTicks ?? stepTicks.toDouble();
