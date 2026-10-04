@@ -41,12 +41,14 @@ class SiriRemoteGlide {
   _State _state = _State.idle;
 
   final Stopwatch _stopWatch = Stopwatch();
+  final Stopwatch _tapStopWatch = Stopwatch();
   int? _lastStepTime = null;
   int? _stepTicks = null;
   double? _decayedStepTicks = null;
   int _stepCounter = 0;
   GamepadNavKey? _lastDirection = null;
   Timer? _stepTimer;
+  GamepadNavKey? _lastTapDirection = null;
 
   double _lastX = 0;
   double _lastY = 0;
@@ -94,6 +96,7 @@ class SiriRemoteGlide {
       case TvRemoteTouchPhase.cancelled:
         _endGesture();
       case TvRemoteTouchPhase.loc:
+        _handleLoc(event.x, event.y);
       case TvRemoteTouchPhase.clickStart:
       case TvRemoteTouchPhase.clickEnd:
         break;
@@ -101,6 +104,7 @@ class SiriRemoteGlide {
   }
 
   void _beginGesture(double x, double y) {
+    // log.playback('begin gesture ${x.toStringAsFixed(3)} ${y.toStringAsFixed(3)}');
     _state = _State.touching;
     _lastX = x;
     _lastY = y;
@@ -122,6 +126,7 @@ class SiriRemoteGlide {
       return;
     }
     // TODO: review resetting state
+    // log.playback('end gesture');
     if (_stopWatch.elapsedMilliseconds >= _flickThreshold.inMilliseconds) {
       _state = _State.idle;
     } else {
@@ -259,10 +264,46 @@ class SiriRemoteGlide {
     _synthesizer.press(direction);
     _synthesizer.release(direction);
   }
+
+  void _handleLoc(double x, double y) {
+    if (x == 0.0 || y == 0.0 || _state != _State.touching) {
+      // don't reject because incomplete could come in
+      // _lastTapDirection = null;
+      return;
+    }
+    final lastDir = _lastTapDirection;
+    final dir = _tapDirection(x, y);
+    if (lastDir != null && lastDir == dir) {
+      final interval = math.max(1, (_tapStopWatch.elapsedMilliseconds / _minStepInterval.inMilliseconds).round());
+      log.playback('The tap gesture should fire ${dir?.name} at $interval');
+    }
+    _lastTapDirection = dir;
+    _tapStopWatch
+      ..reset()
+      ..start();
+  }
+}
+
+GamepadNavKey? _tapDirection(double x, double y) {
+  log.playback('${x.toStringAsFixed(3)} ${y.toStringAsFixed(3)}');
+  if (x > 0.50 && y.abs() <= 0.3) {
+    return GamepadNavKey.right;
+  }
+  if (x < -0.50 && y.abs() <= 0.3) {
+    return GamepadNavKey.left;
+  }
+  if (y > 0.50 && x.abs() <= 0.3) {
+    return GamepadNavKey.up;
+  }
+  if (y < -0.50 && x.abs() <= 0.3) {
+    return GamepadNavKey.down;
+  }
+  return null;
 }
 
 enum _State {
   idle,
+  tapped,
   touching,
   decaying,
 }
