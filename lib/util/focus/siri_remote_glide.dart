@@ -213,9 +213,12 @@ class SiriRemoteGlide {
     }
 
     final stepTicks = _stepTicks;
+    if (stepTicks == null) {
+      _stopStepTimer();
+      return;
+    }
     _stepCounter++;
-    if (stepTicks == null || _stepCounter < stepTicks) {
-      _stepCounter++;
+    if (_stepCounter < stepTicks) {
       return;
     }
 
