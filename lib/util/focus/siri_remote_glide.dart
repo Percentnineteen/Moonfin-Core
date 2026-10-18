@@ -41,14 +41,12 @@ class SiriRemoteGlide {
   _State _state = _State.idle;
 
   final Stopwatch _stopWatch = Stopwatch();
-  final Stopwatch _tapStopWatch = Stopwatch();
   int? _lastStepTime = null;
   int? _stepTicks = null;
   double? _decayedStepTicks = null;
   int _stepCounter = 0;
   GamepadNavKey? _lastDirection = null;
   Timer? _stepTimer;
-  GamepadNavKey? _lastTapDirection = null;
 
   double _lastX = 0;
   double _lastY = 0;
@@ -96,16 +94,13 @@ class SiriRemoteGlide {
       case TvRemoteTouchPhase.cancelled:
         _endGesture();
       case TvRemoteTouchPhase.loc:
-        _handleLoc(event.x, event.y);
       case TvRemoteTouchPhase.clickStart:
       case TvRemoteTouchPhase.clickEnd:
-        _resetTap();
         break;
     }
   }
 
   void _beginGesture(double x, double y) {
-    // log.playback('begin gesture ${x.toStringAsFixed(3)} ${y.toStringAsFixed(3)}');
     _state = _State.touching;
     _lastX = x;
     _lastY = y;
@@ -127,7 +122,6 @@ class SiriRemoteGlide {
       return;
     }
     // TODO: review resetting state
-    // log.playback('end gesture');
     if (_stopWatch.elapsedMilliseconds >= _flickThreshold.inMilliseconds) {
       _state = _State.idle;
     } else {
@@ -219,12 +213,9 @@ class SiriRemoteGlide {
     }
 
     final stepTicks = _stepTicks;
-    if (stepTicks == null) {
-      _stopStepTimer();
-      return;
-    }
     _stepCounter++;
-    if (_stepCounter < stepTicks) {
+    if (stepTicks == null || _stepCounter < stepTicks) {
+      _stepCounter++;
       return;
     }
 
@@ -268,55 +259,10 @@ class SiriRemoteGlide {
     _synthesizer.press(direction);
     _synthesizer.release(direction);
   }
-
-  void _handleLoc(double x, double y) {
-    if (x == 0.0 || y == 0.0 || _state != _State.touching) {
-      // reject this event because it is probably incomplete
-      return;
-    }
-    final lastDir = _lastTapDirection;
-    final dir = _tapDirection(x, y);
-    if (lastDir != null && lastDir == dir) {
-      final ticks = math.max(1, (_tapStopWatch.elapsedMilliseconds / _minStepInterval.inMilliseconds).round());
-      final state = _state;
-      log.playback('The tap gesture should fire ${dir?.name} at $ticks - ${state.name}');
-      _stopStepTimer();
-      _stepTimer = 0;
-
-      _stepTicks = ticks;
-      _lastDirection = dir;
-      _startStepTimer();
-    }
-    _lastTapDirection = dir;
-    _tapStopWatch
-      ..reset()
-      ..start();
-  }
-
-  void _resetTap() {
-    _lastTapDirection = null;
-  }
-}
-
-GamepadNavKey? _tapDirection(double x, double y) {
-  if (x > 0.50 && y.abs() <= 0.3) {
-    return GamepadNavKey.right;
-  }
-  if (x < -0.50 && y.abs() <= 0.3) {
-    return GamepadNavKey.left;
-  }
-  if (y > 0.50 && x.abs() <= 0.3) {
-    return GamepadNavKey.up;
-  }
-  if (y < -0.50 && x.abs() <= 0.3) {
-    return GamepadNavKey.down;
-  }
-  return null;
 }
 
 enum _State {
   idle,
-  tapped,
   touching,
   decaying,
 }
